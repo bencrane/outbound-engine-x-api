@@ -202,13 +202,19 @@ def get_campaign_leads(
             )
         except HeyReachProviderError:
             # Other deployments expose campaign details as POST with campaignId.
-            campaign = _request_json(
-                method="POST",
-                candidate_paths=["/campaign/GetCampaign", "/campaign/GetCampaignDetails"],
-                api_key=api_key,
-                json_payload={"campaignId": str(campaign_id)},
-                timeout_seconds=timeout_seconds,
-            )
+            try:
+                campaign = _request_json(
+                    method="POST",
+                    candidate_paths=["/campaign/GetCampaign", "/campaign/GetCampaignDetails"],
+                    api_key=api_key,
+                    json_payload={"campaignId": str(campaign_id)},
+                    timeout_seconds=timeout_seconds,
+                )
+            except HeyReachProviderError as details_exc:
+                # Some HeyReach API keys/accounts do not expose lead-list/detail APIs.
+                if "endpoint not found" in str(details_exc).lower():
+                    return []
+                raise
         if isinstance(campaign, dict):
             if isinstance(campaign.get("leads"), list):
                 data = campaign["leads"]
@@ -217,9 +223,9 @@ def get_campaign_leads(
             elif isinstance(campaign.get("contacts"), list):
                 data = campaign["contacts"]
             else:
-                raise HeyReachProviderError("Unexpected HeyReach campaign details shape for leads fallback")
+                return []
         else:
-            raise HeyReachProviderError("Unexpected HeyReach campaign details type for leads fallback")
+            return []
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and isinstance(data.get("items"), list):
