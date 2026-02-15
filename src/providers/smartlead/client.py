@@ -512,3 +512,45 @@ def get_campaign_replies(
         raise SmartleadProviderError("Unexpected Smartlead replies response type")
 
     raise SmartleadProviderError(last_error or "Unable to fetch Smartlead campaign replies")
+
+
+def get_campaign_analytics(
+    api_key: str,
+    campaign_id: int | str,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    """Fetch campaign analytics/statistics from Smartlead."""
+    if not api_key:
+        raise SmartleadProviderError("Missing Smartlead API key")
+
+    candidate_urls = [
+        f"{SMARTLEAD_API_BASE}/campaigns/{campaign_id}/stats",
+        f"{SMARTLEAD_API_BASE}/campaigns/{campaign_id}/statistics",
+        f"{SMARTLEAD_API_BASE}/campaigns/{campaign_id}/analytics",
+    ]
+    last_error: str | None = None
+
+    for url in candidate_urls:
+        try:
+            with httpx.Client(timeout=timeout_seconds) as client:
+                response = client.get(url, params={"api_key": api_key})
+        except httpx.HTTPError as exc:
+            last_error = f"Smartlead connectivity error: {exc}"
+            continue
+
+        if response.status_code == 404:
+            last_error = "Smartlead campaign analytics endpoint not found"
+            continue
+        if response.status_code == 401:
+            raise SmartleadProviderError("Invalid Smartlead API key")
+        if response.status_code >= 400:
+            raise SmartleadProviderError(
+                f"Smartlead API returned HTTP {response.status_code}: {response.text[:200]}"
+            )
+
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload
+        raise SmartleadProviderError("Unexpected Smartlead campaign analytics response type")
+
+    raise SmartleadProviderError(last_error or "Unable to fetch Smartlead campaign analytics")

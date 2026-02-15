@@ -19,10 +19,15 @@ from src.models.leads import (
     CampaignLeadResponse,
 )
 from src.models.messages import CampaignMessageResponse
+from src.models.analytics import (
+    CampaignAnalyticsProviderResponse,
+    CampaignAnalyticsSummaryResponse,
+)
 from src.providers.smartlead.client import (
     add_campaign_leads as smartlead_add_campaign_leads,
     get_campaign_leads as smartlead_get_campaign_leads,
     get_campaign_lead_messages as smartlead_get_campaign_lead_messages,
+    get_campaign_analytics as smartlead_get_campaign_analytics,
     get_campaign_replies as smartlead_get_campaign_replies,
     pause_campaign_lead as smartlead_pause_campaign_lead,
     resume_campaign_lead as smartlead_resume_campaign_lead,
@@ -40,6 +45,19 @@ router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
 
 
 def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
@@ -674,3 +692,92 @@ async def list_campaign_lead_messages(
         "company_campaign_lead_id", lead_id
     ).is_("deleted_at", "null").execute()
     return result.data
+
+
+@router.get("/{campaign_id}/analytics/summary", response_model=CampaignAnalyticsSummaryResponse)
+async def get_campaign_analytics_summary(
+    campaign_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+
+    leads_result = supabase.table("company_campaign_leads").select(
+        "status, updated_at"
+    ).eq("org_id", auth.org_id).eq("company_campaign_id", campaign_id).is_("deleted_at", "null").execute()
+    messages_result = supabase.table("company_campaign_messages").select(
+        "direction, sent_at, updated_at"
+    ).eq("org_id", auth.org_id).eq("company_campaign_id", campaign_id).is_("deleted_at", "null").execute()
+
+    leads = leads_result.data or []
+    messages = messages_result.data or []
+
+    leads_total = len(leads)
+    leads_active = len([row for row in leads if (row.get("status") or "").lower() == "active"])
+    leads_paused = len([row for row in leads if (row.get("status") or "").lower() == "paused"])
+    leads_unsubscribed = len([row for row in leads if (row.get("status") or "").lower() == "unsubscribed"])
+    replies_total = len([row for row in messages if (row.get("direction") or "").lower() == "inbound"])
+    outbound_total = len([row for row in messages if (row.get("direction") or "").lower() == "outbound"])
+    reply_rate = round((replies_total / outbound_total) * 100, 2) if outbound_total > 0 else 0.0
+
+    activity_candidates: list[datetime] = []
+    campaign_updated_at = _parse_datetime(campaign.get("updated_at"))
+    if campaign_updated_at:
+        activity_candidates.append(campaign_updated_at)
+    for lead in leads:
+        dt = _parse_datetime(lead.get("updated_at"))
+        if dt:
+            activity_candidates.append(dt)
+    for msg in messages:
+        dt = _parse_datetime(msg.get("sent_at")) or _parse_datetime(msg.get("updated_at"))
+        if dt:
+            activity_candidates.append(dt)
+
+    last_activity_at = max(activity_candidates) if activity_candidates else None
+
+    return CampaignAnalyticsSummaryResponse(
+        campaign_id=campaign_id,
+        leads_total=leads_total,
+        leads_active=leads_active,
+        leads_paused=leads_paused,
+        leads_unsubscribed=leads_unsubscribed,
+        replies_total=replies_total,
+        outbound_messages_total=outbound_total,
+        reply_rate=reply_rate,
+        campaign_status=campaign["status"],
+        last_activity_at=last_activity_at,
+        updated_at=datetime.now(timezone.utc),
+    )
+
+
+@router.get("/{campaign_id}/analytics/provider", response_model=CampaignAnalyticsProviderResponse)
+async def get_campaign_analytics_provider(
+    campaign_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    _get_smartlead_entitlement(auth.org_id, campaign["company_id"])
+    api_key = _get_org_smartlead_api_key(auth.org_id)
+
+    try:
+        raw = smartlead_get_campaign_analytics(
+            api_key=api_key,
+            campaign_id=campaign["external_campaign_id"],
+        )
+    except SmartleadProviderError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Campaign analytics fetch failed: {exc}") from exc
+
+    normalized = {
+        "sent": raw.get("sent_count") or raw.get("sent") or raw.get("total_sent"),
+        "opened": raw.get("open_count") or raw.get("opened") or raw.get("total_opened"),
+        "replied": raw.get("reply_count") or raw.get("replied") or raw.get("total_replied"),
+        "bounced": raw.get("bounce_count") or raw.get("bounced") or raw.get("total_bounced"),
+    }
+
+    return CampaignAnalyticsProviderResponse(
+        campaign_id=campaign_id,
+        provider="smartlead",
+        provider_campaign_id=campaign["external_campaign_id"],
+        normalized=normalized,
+        raw=raw,
+        fetched_at=datetime.now(timezone.utc),
+    )

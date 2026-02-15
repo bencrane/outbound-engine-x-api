@@ -503,3 +503,82 @@ def test_list_campaign_lead_messages_with_provider_sync(monkeypatch):
     assert data[0]["subject"] == "Hello"
 
     _clear()
+
+
+def test_campaign_analytics_summary(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "123",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["company_campaign_leads"] = [
+        {"id": "l1", "org_id": "org-1", "company_campaign_id": "cmp-1", "status": "active", "updated_at": _ts(), "deleted_at": None},
+        {"id": "l2", "org_id": "org-1", "company_campaign_id": "cmp-1", "status": "paused", "updated_at": _ts(), "deleted_at": None},
+        {"id": "l3", "org_id": "org-1", "company_campaign_id": "cmp-1", "status": "unsubscribed", "updated_at": _ts(), "deleted_at": None},
+    ]
+    tables["company_campaign_messages"] = [
+        {"id": "m1", "org_id": "org-1", "company_campaign_id": "cmp-1", "direction": "outbound", "updated_at": _ts(), "deleted_at": None},
+        {"id": "m2", "org_id": "org-1", "company_campaign_id": "cmp-1", "direction": "inbound", "updated_at": _ts(), "deleted_at": None},
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-1/analytics/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["leads_total"] == 3
+    assert body["replies_total"] == 1
+    assert body["outbound_messages_total"] == 1
+    assert body["reply_rate"] == 100.0
+
+    _clear()
+
+
+def test_campaign_analytics_provider(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "123",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "smartlead_get_campaign_analytics",
+        lambda **kwargs: {"sent_count": 10, "open_count": 5, "reply_count": 2, "bounce_count": 1},
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-1/analytics/provider")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "smartlead"
+    assert body["normalized"]["sent"] == 10
+    assert body["normalized"]["replied"] == 2
+
+    _clear()
