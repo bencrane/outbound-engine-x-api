@@ -115,6 +115,10 @@ class AuthContext:
 - HeyReach integration endpoints (campaigns, leads, LinkedIn accounts)
 - Webhook ingestion from HeyReach
 
+## Workflow
+
+- **"commit"** means: stage, commit, and push to GitHub. Always push.
+
 ## Environment Variables
 
 See `.env.example` for required values. Never commit `.env`.
