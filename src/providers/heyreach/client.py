@@ -181,17 +181,39 @@ def get_campaign_leads(
     limit: int = 50,
     timeout_seconds: float = 12.0,
 ) -> list[dict[str, Any]]:
-    data = _request_json(
-        method="POST",
-        candidate_paths=["/campaign/GetLeads", "/campaign/leads"],
-        api_key=api_key,
-        json_payload={"campaignId": str(campaign_id), "page": page, "limit": limit},
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        data = _request_json(
+            method="POST",
+            candidate_paths=["/campaign/GetLeads", "/campaign/leads"],
+            api_key=api_key,
+            json_payload={"campaignId": str(campaign_id), "page": page, "limit": limit},
+            timeout_seconds=timeout_seconds,
+        )
+    except HeyReachProviderError as exc:
+        # Some deployments expose lead listing via GET campaign details.
+        if "endpoint not found" not in str(exc).lower() and "HTTP 405" not in str(exc):
+            raise
+        campaign = _request_json(
+            method="GET",
+            candidate_paths=[f"/campaign/{campaign_id}", "/campaign/GetCampaign"],
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
+        if isinstance(campaign, dict):
+            if isinstance(campaign.get("leads"), list):
+                data = campaign["leads"]
+            elif isinstance(campaign.get("items"), list):
+                data = campaign["items"]
+            else:
+                raise HeyReachProviderError("Unexpected HeyReach campaign details shape for leads fallback")
+        else:
+            raise HeyReachProviderError("Unexpected HeyReach campaign details type for leads fallback")
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and isinstance(data.get("items"), list):
         return data["items"]
+    if isinstance(data, dict) and isinstance(data.get("leads"), list):
+        return data["leads"]
     raise HeyReachProviderError("Unexpected HeyReach campaign leads response shape")
 
 
