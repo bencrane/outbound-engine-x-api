@@ -23,6 +23,10 @@ ADD CONSTRAINT company_campaigns_status_check
 CHECK (status IN ('DRAFTED', 'ACTIVE', 'PAUSED', 'STOPPED', 'COMPLETED'));
 
 ALTER TABLE company_campaigns
+DROP CONSTRAINT IF EXISTS company_campaigns_id_org_id_unique,
+ADD CONSTRAINT company_campaigns_id_org_id_unique UNIQUE (id, org_id);
+
+ALTER TABLE company_campaigns
 DROP CONSTRAINT IF EXISTS company_campaigns_company_same_org_fk,
 ADD CONSTRAINT company_campaigns_company_same_org_fk
 FOREIGN KEY (company_id, org_id)

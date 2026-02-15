@@ -303,3 +303,203 @@ def test_get_campaign_sequence_falls_back_to_local_snapshot(monkeypatch):
     assert body["sequence"][0]["subject"] == "cached"
 
     _clear()
+
+
+def test_add_campaign_leads_and_list(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "123",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["company_campaign_leads"] = []
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(campaigns_router, "smartlead_add_campaign_leads", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(
+        campaigns_router,
+        "smartlead_get_campaign_leads",
+        lambda **kwargs: [{"id": 77, "email": "lead@example.com", "first_name": "Lead", "status": "active"}],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    add_response = client.post(
+        "/api/campaigns/cmp-1/leads",
+        json={"leads": [{"email": "lead@example.com", "first_name": "Lead"}]},
+    )
+    assert add_response.status_code == 200
+    assert add_response.json()["affected"] == 1
+
+    list_response = client.get("/api/campaigns/cmp-1/leads")
+    assert list_response.status_code == 200
+    leads = list_response.json()
+    assert len(leads) == 1
+    assert leads[0]["email"] == "lead@example.com"
+
+    _clear()
+
+
+def test_pause_resume_unsubscribe_campaign_lead(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "123",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["company_campaign_leads"] = [
+        {
+            "id": "lead-local-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "company_campaign_id": "cmp-1",
+            "provider_id": "prov-smartlead",
+            "external_lead_id": "77",
+            "email": "lead@example.com",
+            "status": "active",
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(campaigns_router, "smartlead_pause_campaign_lead", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(campaigns_router, "smartlead_resume_campaign_lead", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(campaigns_router, "smartlead_unsubscribe_campaign_lead", lambda **kwargs: {"ok": True})
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    pause = client.post("/api/campaigns/cmp-1/leads/lead-local-1/pause")
+    assert pause.status_code == 200
+    assert pause.json()["status"] == "paused"
+
+    resume = client.post("/api/campaigns/cmp-1/leads/lead-local-1/resume")
+    assert resume.status_code == 200
+    assert resume.json()["status"] == "active"
+
+    unsub = client.post("/api/campaigns/cmp-1/leads/lead-local-1/unsubscribe")
+    assert unsub.status_code == 200
+    assert unsub.json()["status"] == "unsubscribed"
+
+    _clear()
+
+
+def test_list_campaign_replies_with_provider_sync(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "123",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["company_campaign_messages"] = []
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "smartlead_get_campaign_replies",
+        lambda **kwargs: [{"id": 501, "subject": "Re: hello", "body": "reply", "lead_id": "77"}],
+    )
+    tables["company_campaign_leads"] = [
+        {
+            "id": "lead-local-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "company_campaign_id": "cmp-1",
+            "provider_id": "prov-smartlead",
+            "external_lead_id": "77",
+            "status": "active",
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-1/replies")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["direction"] == "inbound"
+    assert data[0]["subject"] == "Re: hello"
+
+    _clear()
+
+
+def test_list_campaign_lead_messages_with_provider_sync(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "123",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["company_campaign_leads"] = [
+        {
+            "id": "lead-local-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "company_campaign_id": "cmp-1",
+            "provider_id": "prov-smartlead",
+            "external_lead_id": "77",
+            "status": "active",
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["company_campaign_messages"] = []
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "smartlead_get_campaign_lead_messages",
+        lambda **kwargs: [{"id": 601, "direction": "outbound", "subject": "Hello", "body": "Message"}],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-1/leads/lead-local-1/messages")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["subject"] == "Hello"
+
+    _clear()

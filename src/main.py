@@ -10,6 +10,7 @@ from src.routers import (
     internal_provisioning,
     inboxes,
     campaigns,
+    webhooks,
 )
 
 app = FastAPI(title="Outbound Engine X", version="0.1.0")
@@ -31,6 +32,7 @@ app.include_router(super_admin.router)
 app.include_router(internal_provisioning.router)
 app.include_router(inboxes.router)
 app.include_router(campaigns.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/")

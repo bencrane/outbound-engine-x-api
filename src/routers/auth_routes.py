@@ -1,5 +1,6 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
-from passlib.hash import bcrypt
+import bcrypt as bcrypt_lib
 from src.auth import AuthContext, get_current_auth
 from src.auth.jwt import create_access_token
 from src.db import supabase
@@ -12,16 +13,34 @@ from src.models.auth import (
     MeResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Verify password against hash using bcrypt."""
+    try:
+        return bcrypt_lib.checkpw(password.encode(), password_hash.encode())
+    except Exception as e:
+        logger.error(f"Password verification error: {e}")
+        return False
 
 
 @router.post("/login", response_model=LoginResponse)
 async def login(data: LoginRequest):
     """Login with email and password, returns JWT."""
     # Email is unique per-org, not globally unique.
-    result = supabase.table("users").select(
-        "id, org_id, company_id, email, password_hash"
-    ).eq("email", data.email).is_("deleted_at", "null").execute()
+    try:
+        result = supabase.table("users").select(
+            "id, org_id, company_id, email, password_hash"
+        ).eq("email", data.email).is_("deleted_at", "null").execute()
+    except Exception as e:
+        logger.error(f"Database error during login: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database error: {type(e).__name__}"
+        )
 
     if not result.data:
         raise HTTPException(
@@ -31,7 +50,7 @@ async def login(data: LoginRequest):
 
     matching_users = [
         user for user in result.data
-        if bcrypt.verify(data.password, user["password_hash"])
+        if verify_password(data.password, user["password_hash"])
     ]
 
     if not matching_users:

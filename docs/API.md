@@ -115,7 +115,12 @@ All require `Authorization: Bearer <super-admin-token>`.
 
 ## Tenant Endpoints
 
-All require `Authorization: Bearer <api_token>` (org-scoped).
+All require `Authorization: Bearer <session_jwt_or_api_token>` (org-scoped).
+
+Authorization rules:
+- org read endpoints are available to any authenticated user in-org.
+- company/user/entitlement management requires `role=admin`.
+- tenant `/api/auth/tokens*` is disabled (`403`); token creation is super-admin only.
 
 ### Organizations
 
@@ -173,11 +178,49 @@ All require `Authorization: Bearer <api_token>` (org-scoped).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/auth/login` | User login, returns JWT |
+| POST | `/api/auth/login` | User login, returns JWT (`409` if ambiguous account across orgs) |
 | GET | `/api/auth/me` | Current auth context |
-| POST | `/api/auth/tokens` | Create API token |
-| GET | `/api/auth/tokens` | List API tokens |
-| DELETE | `/api/auth/tokens/{id}` | Revoke token |
+
+API token management is super-admin only:
+- `POST /api/super-admin/organizations/{org_id}/api-tokens`
+
+### Provisioning (Internal, Super-Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/internal/provisioning/email-outreach/{company_id}` | Provision company email capability mapping |
+| GET | `/api/internal/provisioning/email-outreach/{company_id}/status` | Provisioning status |
+| POST | `/api/internal/provisioning/email-outreach/{company_id}/sync-inboxes` | Sync provider inboxes into local DB |
+
+### Inboxes (Capability-Facing)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/inboxes/` | List company inboxes (provider-hidden) |
+
+### Campaigns (Email / Smartlead-backed)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/campaigns/` | Create campaign |
+| GET | `/api/campaigns/` | List campaigns (`mine_only` optional) |
+| GET | `/api/campaigns/{campaign_id}` | Get campaign |
+| POST | `/api/campaigns/{campaign_id}/status` | Update campaign status |
+| GET | `/api/campaigns/{campaign_id}/sequence` | Get sequence |
+| POST | `/api/campaigns/{campaign_id}/sequence` | Save sequence |
+| POST | `/api/campaigns/{campaign_id}/leads` | Add leads |
+| GET | `/api/campaigns/{campaign_id}/leads` | List leads |
+| POST | `/api/campaigns/{campaign_id}/leads/{lead_id}/pause` | Pause lead |
+| POST | `/api/campaigns/{campaign_id}/leads/{lead_id}/resume` | Resume lead |
+| POST | `/api/campaigns/{campaign_id}/leads/{lead_id}/unsubscribe` | Unsubscribe lead |
+| GET | `/api/campaigns/{campaign_id}/replies` | List campaign replies (inbound) |
+| GET | `/api/campaigns/{campaign_id}/leads/{lead_id}/messages` | List lead message history |
+
+### Webhooks
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/webhooks/smartlead` | Ingest Smartlead webhook events (idempotent) |
 
 ---
 

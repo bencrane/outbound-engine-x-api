@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     jwt_expiration_minutes: int = 60
+    smartlead_webhook_secret: str | None = None
 
     class Config:
         env_file = ".env"
