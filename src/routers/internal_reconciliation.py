@@ -121,7 +121,6 @@ def _run_reconciliation(data: ReconciliationRunRequest) -> ReconciliationRunResp
             supabase.table("company_entitlements")
             .select("id, org_id, company_id, provider_config")
             .eq("provider_id", provider_id)
-            .is_("deleted_at", "null")
         )
         if data.org_id:
             ent_query = ent_query.eq("org_id", data.org_id)
