@@ -118,6 +118,14 @@ def list_campaigns(
             continue
         if response.status_code == 401:
             raise SmartleadProviderError("Invalid Smartlead API key")
+        if response.status_code == 400 and "limit" in (response.text or "").lower():
+            # Some Smartlead deployments reject limit/offset query args.
+            try:
+                with httpx.Client(timeout=timeout_seconds) as client:
+                    response = client.get(url, params={"api_key": api_key})
+            except httpx.HTTPError as exc:
+                last_error = f"Smartlead connectivity error: {exc}"
+                continue
         if response.status_code >= 400:
             raise SmartleadProviderError(
                 f"Smartlead API returned HTTP {response.status_code}: {response.text[:200]}"
