@@ -355,3 +355,9 @@ GET /api/super-admin/providers
 | Set provider config | PUT | `/api/super-admin/organizations/{org_id}/provider-config` |
 | List capabilities | GET | `/api/super-admin/capabilities` |
 | List providers | GET | `/api/super-admin/providers` |
+| List webhook events | GET | `/api/webhooks/events` |
+| Replay webhook event | POST | `/api/webhooks/replay/{provider_slug}/{event_key}` |
+| Bulk replay webhook events | POST | `/api/webhooks/replay-bulk` |
+| Replay webhook events by query | POST | `/api/webhooks/replay-query` |
+| Reconcile campaigns/leads | POST | `/api/internal/reconciliation/campaigns-leads` |
+| Scheduled reconcile trigger | POST | `/api/internal/reconciliation/run-scheduled` |

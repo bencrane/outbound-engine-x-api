@@ -89,6 +89,54 @@ def list_email_accounts(api_key: str, timeout_seconds: float = 12.0) -> list[dic
     raise SmartleadProviderError(last_error or "Unable to fetch Smartlead email accounts")
 
 
+def list_campaigns(
+    api_key: str,
+    limit: int = 100,
+    offset: int = 0,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    """Fetch Smartlead campaigns."""
+    if not api_key:
+        raise SmartleadProviderError("Missing Smartlead API key")
+
+    candidate_urls = [
+        f"{SMARTLEAD_API_BASE}/campaigns",
+        f"{SMARTLEAD_API_BASE}/campaign/list",
+    ]
+    params = {"api_key": api_key, "limit": limit, "offset": offset}
+    last_error: str | None = None
+    for url in candidate_urls:
+        try:
+            with httpx.Client(timeout=timeout_seconds) as client:
+                response = client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            last_error = f"Smartlead connectivity error: {exc}"
+            continue
+
+        if response.status_code == 404:
+            last_error = "Smartlead campaigns endpoint not found"
+            continue
+        if response.status_code == 401:
+            raise SmartleadProviderError("Invalid Smartlead API key")
+        if response.status_code >= 400:
+            raise SmartleadProviderError(
+                f"Smartlead API returned HTTP {response.status_code}: {response.text[:200]}"
+            )
+
+        payload = response.json()
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            if isinstance(payload.get("data"), list):
+                return payload["data"]
+            if isinstance(payload.get("items"), list):
+                return payload["items"]
+            raise SmartleadProviderError("Unexpected Smartlead campaigns response shape")
+        raise SmartleadProviderError("Unexpected Smartlead campaigns response type")
+
+    raise SmartleadProviderError(last_error or "Unable to fetch Smartlead campaigns")
+
+
 def create_campaign(api_key: str, name: str, client_id: int, timeout_seconds: float = 12.0) -> dict[str, Any]:
     """
     Create a Smartlead campaign for a specific client.

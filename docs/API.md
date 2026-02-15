@@ -192,6 +192,13 @@ API token management is super-admin only:
 | GET | `/api/internal/provisioning/email-outreach/{company_id}/status` | Provisioning status |
 | POST | `/api/internal/provisioning/email-outreach/{company_id}/sync-inboxes` | Sync provider inboxes into local DB |
 
+### Reconciliation (Internal, Super-Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/internal/reconciliation/campaigns-leads` | Reconcile provider campaigns/leads into local DB (`dry_run` default true) |
+| POST | `/api/internal/reconciliation/run-scheduled` | Scheduler-triggered reconciliation (requires `X-Internal-Scheduler-Secret`) |
+
 ### Inboxes (Capability-Facing)
 
 | Method | Path | Description |
@@ -215,12 +222,47 @@ API token management is super-admin only:
 | POST | `/api/campaigns/{campaign_id}/leads/{lead_id}/unsubscribe` | Unsubscribe lead |
 | GET | `/api/campaigns/{campaign_id}/replies` | List campaign replies (inbound) |
 | GET | `/api/campaigns/{campaign_id}/leads/{lead_id}/messages` | List lead message history |
+| GET | `/api/campaigns/{campaign_id}/analytics/summary` | Local campaign summary analytics |
+| GET | `/api/campaigns/{campaign_id}/analytics/provider` | Provider-enriched campaign analytics |
+
+### LinkedIn Campaigns (HeyReach-backed)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/linkedin/campaigns/` | Create LinkedIn campaign |
+| GET | `/api/linkedin/campaigns/` | List LinkedIn campaigns (`mine_only` optional) |
+| GET | `/api/linkedin/campaigns/{campaign_id}` | Get LinkedIn campaign |
+| POST | `/api/linkedin/campaigns/{campaign_id}/action` | Campaign action (`pause` or `resume`) |
+| POST | `/api/linkedin/campaigns/{campaign_id}/leads` | Add LinkedIn leads |
+| GET | `/api/linkedin/campaigns/{campaign_id}/leads` | List LinkedIn leads |
+| POST | `/api/linkedin/campaigns/{campaign_id}/leads/{lead_id}/status` | Update lead status |
+| POST | `/api/linkedin/campaigns/{campaign_id}/leads/{lead_id}/messages` | Send outbound message |
+| GET | `/api/linkedin/campaigns/{campaign_id}/metrics` | Provider-enriched LinkedIn metrics |
+
+### Analytics Dashboard
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/analytics/campaigns` | Cross-campaign rollups (`company_id`, `from_ts`, `to_ts`, `mine_only`) |
 
 ### Webhooks
 
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/webhooks/smartlead` | Ingest Smartlead webhook events (idempotent) |
+| POST | `/api/webhooks/heyreach` | Ingest HeyReach webhook events (idempotent) |
+| GET | `/api/webhooks/events` | Super-admin list/search webhook events (`provider_slug`, `event_type`, `org_id`, `company_id`, `limit`, `offset`) |
+| POST | `/api/webhooks/replay/{provider_slug}/{event_key}` | Super-admin replay/reprocess of stored webhook event |
+| POST | `/api/webhooks/replay-bulk` | Super-admin bulk replay by provider + event keys |
+| POST | `/api/webhooks/replay-query` | Super-admin replay by query filters (`provider_slug`, optional `event_type`, `org_id`, `company_id`, `from_ts`, `to_ts`, `limit`) |
+
+Webhook signature:
+- if `smartlead_webhook_secret` is configured, send `X-Smartlead-Signature` (HMAC SHA-256 of raw body).
+- if `heyreach_webhook_secret` is configured, send `X-HeyReach-Signature` (HMAC SHA-256 of raw body).
+
+Webhook replay:
+- requires super-admin bearer token
+- supported providers: `smartlead`, `heyreach`
 
 ---
 

@@ -7,6 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from src.auth import AuthContext, get_current_auth
 from src.db import supabase
+from src.domain.normalization import (
+    normalize_campaign_status,
+    normalize_lead_status,
+    normalize_message_direction,
+)
 from src.models.campaigns import (
     CampaignCreateRequest,
     CampaignResponse,
@@ -156,7 +161,7 @@ def _extract_provider_lead(lead: dict[str, Any]) -> dict[str, Any] | None:
         "last_name": lead.get("last_name"),
         "company_name": lead.get("company") or lead.get("company_name"),
         "title": lead.get("title"),
-        "status": lead.get("status") or "active",
+        "status": normalize_lead_status(lead.get("status")),
         "category": lead.get("category"),
         "raw_payload": lead,
     }
@@ -186,7 +191,7 @@ def _upsert_campaign_lead(
         "last_name": parsed.get("last_name"),
         "company_name": parsed.get("company_name"),
         "title": parsed.get("title"),
-        "status": parsed.get("status") or "active",
+        "status": normalize_lead_status(parsed.get("status")),
         "category": parsed.get("category"),
         "raw_payload": parsed.get("raw_payload"),
         "updated_at": _now_iso(),
@@ -205,9 +210,7 @@ def _extract_provider_message(message: dict[str, Any], default_direction: str = 
     external_id = message.get("id") or message.get("email_stats_id") or message.get("message_id")
     if external_id is None:
         return None
-    direction = (message.get("direction") or default_direction or "unknown").lower()
-    if direction not in {"inbound", "outbound"}:
-        direction = "unknown"
+    direction = normalize_message_direction(message.get("direction") or default_direction)
     return {
         "external_message_id": str(external_id),
         "external_lead_id": str(message.get("lead_id")) if message.get("lead_id") is not None else None,
@@ -299,7 +302,7 @@ async def create_campaign(
         "provider_id": entitlement["provider_id"],
         "external_campaign_id": str(external_campaign_id),
         "name": provider_campaign.get("name") or data.name,
-        "status": provider_campaign.get("status") or "DRAFTED",
+        "status": normalize_campaign_status(provider_campaign.get("status")),
         "created_by_user_id": auth.user_id,
         "raw_payload": provider_campaign,
         "updated_at": _now_iso(),

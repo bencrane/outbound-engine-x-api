@@ -139,6 +139,25 @@ def test_create_campaign_success(monkeypatch):
     _clear()
 
 
+def test_create_campaign_normalizes_provider_status(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "smartlead_create_campaign",
+        lambda api_key, name, client_id: {"id": 99, "name": name, "status": "started"},
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/campaigns/", json={"name": "Normalize Me"})
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "ACTIVE"
+
+    _clear()
+
+
 def test_list_campaigns_mine_only(monkeypatch):
     tables = _base_tables()
     tables["company_campaigns"] = [

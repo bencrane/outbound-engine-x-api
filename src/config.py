@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expiration_minutes: int = 60
     smartlead_webhook_secret: str | None = None
+    heyreach_webhook_secret: str | None = None
+    internal_scheduler_secret: str | None = None
 
     class Config:
         env_file = ".env"
