@@ -1,12 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from src.routers import organizations, companies, users, entitlements, auth_routes, super_admin
+from src.routers import (
+    organizations,
+    companies,
+    users,
+    entitlements,
+    auth_routes,
+    super_admin,
+    internal_provisioning,
+    inboxes,
+    campaigns,
+)
 
 app = FastAPI(title="Outbound Engine X", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3003"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -18,6 +28,9 @@ app.include_router(users.router)
 app.include_router(entitlements.router)
 app.include_router(auth_routes.router)
 app.include_router(super_admin.router)
+app.include_router(internal_provisioning.router)
+app.include_router(inboxes.router)
+app.include_router(campaigns.router)
 
 
 @app.get("/")

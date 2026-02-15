@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from datetime import datetime
+from typing import Literal
 
 
 class UserCreate(BaseModel):
@@ -8,7 +9,7 @@ class UserCreate(BaseModel):
     company_id: str | None = None
     name_first: str | None = None
     name_last: str | None = None
-    role: str = "user"
+    role: Literal["admin", "user"] = "user"
 
 
 class UserUpdate(BaseModel):
@@ -17,7 +18,7 @@ class UserUpdate(BaseModel):
     company_id: str | None = None
     name_first: str | None = None
     name_last: str | None = None
-    role: str | None = None
+    role: Literal["admin", "user"] | None = None
 
 
 class UserResponse(BaseModel):
@@ -26,6 +27,6 @@ class UserResponse(BaseModel):
     company_id: str | None
     name_first: str | None
     name_last: str | None
-    role: str
+    role: Literal["admin", "user"]
     created_at: datetime
     updated_at: datetime

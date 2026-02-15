@@ -1,6 +1,6 @@
 import hashlib
 from datetime import datetime, timezone
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from src.auth.context import AuthContext, SuperAdminContext
 from src.auth.jwt import decode_access_token, decode_super_admin_token
 from src.db import supabase
@@ -19,6 +19,22 @@ def _extract_bearer_token(authorization: str | None) -> str | None:
     if len(parts) != 2 or parts[0].lower() != "bearer":
         return None
     return parts[1]
+
+
+def _get_active_user(user_id: str, org_id: str) -> dict | None:
+    """Load active user and enforce org is active."""
+    org_result = supabase.table("organizations").select("id").eq(
+        "id", org_id
+    ).is_("deleted_at", "null").execute()
+    if not org_result.data:
+        return None
+
+    user_result = supabase.table("users").select(
+        "id, org_id, company_id, role"
+    ).eq("id", user_id).eq("org_id", org_id).is_("deleted_at", "null").execute()
+    if not user_result.data:
+        return None
+    return user_result.data[0]
 
 
 async def _validate_api_token(token: str) -> AuthContext | None:
@@ -45,9 +61,15 @@ async def _validate_api_token(token: str) -> AuthContext | None:
         "last_used_at": datetime.now(timezone.utc).isoformat()
     }).eq("id", token_record["id"]).execute()
 
+    user = _get_active_user(token_record["user_id"], token_record["org_id"])
+    if not user:
+        return None
+
     return AuthContext(
         org_id=token_record["org_id"],
         user_id=token_record["user_id"],
+        role=user["role"],
+        company_id=user.get("company_id"),
         token_id=token_record["id"],
         auth_method="api_token",
     )
@@ -59,10 +81,15 @@ async def _validate_jwt(token: str) -> AuthContext | None:
     if not payload:
         return None
 
+    user = _get_active_user(payload["sub"], payload["org_id"])
+    if not user:
+        return None
+
     return AuthContext(
         org_id=payload["org_id"],
         user_id=payload["sub"],
-        company_id=payload.get("company_id"),
+        role=user["role"],
+        company_id=user.get("company_id"),
         auth_method="session",
     )
 
@@ -172,3 +199,13 @@ async def get_current_super_admin(authorization: str | None = Header(None)) -> S
         super_admin_id=super_admin["id"],
         email=super_admin["email"],
     )
+
+
+async def require_org_admin(auth: AuthContext = Depends(get_current_auth)) -> AuthContext:
+    """Authorization dependency for org-admin-only tenant management endpoints."""
+    if auth.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required",
+        )
+    return auth

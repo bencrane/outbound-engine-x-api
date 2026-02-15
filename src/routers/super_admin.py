@@ -1,11 +1,15 @@
 import secrets
 import hashlib
+import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 import bcrypt as bcrypt_lib
 from pydantic import BaseModel, EmailStr
+from typing import Literal
 from src.auth import SuperAdminContext, get_current_super_admin, create_super_admin_token
 from src.db import supabase
+
+logger = logging.getLogger(__name__)
 
 
 def hash_password(password: str) -> str:
@@ -62,7 +66,7 @@ class UserCreate(BaseModel):
     password: str
     name_first: str | None = None
     name_last: str | None = None
-    role: str = "admin"
+    role: Literal["admin", "user"] = "admin"
 
 
 class UserResponse(BaseModel):
@@ -71,14 +75,23 @@ class UserResponse(BaseModel):
     company_id: str | None
     name_first: str | None
     name_last: str | None
-    role: str
+    role: Literal["admin", "user"]
     created_at: datetime
     updated_at: datetime
+
+
+class CompanyCreate(BaseModel):
+    name: str
+    domain: str | None = None
 
 
 class CompanyResponse(BaseModel):
     id: str
     name: str
+    domain: str | None = None
+    status: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class CapabilityInfo(BaseModel):
@@ -116,14 +129,29 @@ class ProviderConfigUpdate(BaseModel):
     config: dict          # Provider-specific config (API keys, etc.)
 
 
+def _ensure_org_exists(org_id: str) -> None:
+    org_check = supabase.table("organizations").select("id").eq(
+        "id", org_id
+    ).is_("deleted_at", "null").execute()
+    if not org_check.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+
+
 # --- Login (no auth required) ---
 
 @router.post("/login", response_model=SuperAdminLoginResponse)
 async def super_admin_login(data: SuperAdminLoginRequest):
     """Login as super-admin, returns JWT with type 'super_admin'."""
-    result = supabase.table("super_admins").select(
-        "id, email, password_hash"
-    ).eq("email", data.email).execute()
+    try:
+        result = supabase.table("super_admins").select(
+            "id, email, password_hash"
+        ).eq("email", data.email).execute()
+    except Exception as e:
+        logger.error(f"Database error during super-admin login: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database connection failed: {type(e).__name__}"
+        )
 
     if not result.data:
         raise HTTPException(
@@ -133,13 +161,30 @@ async def super_admin_login(data: SuperAdminLoginRequest):
 
     super_admin = result.data[0]
 
-    if not verify_password(data.password, super_admin["password_hash"]):
+    try:
+        if not verify_password(data.password, super_admin["password_hash"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Password verification error: {e}")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Password verification failed: {type(e).__name__}"
         )
 
-    token = create_super_admin_token(super_admin_id=super_admin["id"])
+    try:
+        token = create_super_admin_token(super_admin_id=super_admin["id"])
+    except Exception as e:
+        logger.error(f"Token creation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Token creation failed: {type(e).__name__}"
+        )
+
     return SuperAdminLoginResponse(access_token=token)
 
 
@@ -280,11 +325,36 @@ async def list_org_companies(
     ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
     """List all companies in an organization."""
+    _ensure_org_exists(org_id)
     result = supabase.table("companies").select("*").eq(
         "org_id", org_id
     ).is_("deleted_at", "null").execute()
 
     return result.data
+
+
+@router.post("/organizations/{org_id}/companies", response_model=CompanyResponse, status_code=status.HTTP_201_CREATED)
+async def create_org_company(
+    org_id: str,
+    data: CompanyCreate,
+    ctx: SuperAdminContext = Depends(get_current_super_admin),
+):
+    """Create a company within an org."""
+    # Verify org exists
+    org_check = supabase.table("organizations").select("id").eq(
+        "id", org_id
+    ).is_("deleted_at", "null").execute()
+
+    if not org_check.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+
+    result = supabase.table("companies").insert({
+        "org_id": org_id,
+        "name": data.name,
+        "domain": data.domain,
+    }).execute()
+
+    return result.data[0]
 
 
 @router.get("/organizations/{org_id}/users", response_model=list[UserResponse])
@@ -293,11 +363,29 @@ async def list_org_users(
     ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
     """List all users in an organization."""
+    _ensure_org_exists(org_id)
     result = supabase.table("users").select(
         "id, email, company_id, name_first, name_last, role, created_at, updated_at"
     ).eq("org_id", org_id).is_("deleted_at", "null").execute()
 
     return result.data
+
+
+@router.delete("/organizations/{org_id}/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_org_user(
+    org_id: str,
+    user_id: str,
+    ctx: SuperAdminContext = Depends(get_current_super_admin),
+):
+    """Soft delete a user within an org."""
+    result = supabase.table("users").update({
+        "deleted_at": datetime.now(timezone.utc).isoformat()
+    }).eq("id", user_id).eq("org_id", org_id).is_("deleted_at", "null").execute()
+
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    return None
 
 
 @router.post("/organizations/{org_id}/api-tokens", response_model=TokenCreateResponse, status_code=status.HTTP_201_CREATED)

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
-from src.auth import AuthContext, get_current_auth
+from src.auth import AuthContext, get_current_auth, require_org_admin
 from src.db import supabase
 from src.models.organizations import OrganizationResponse, OrganizationUpdate
 
@@ -37,7 +37,7 @@ async def get_organization(org_id: str, auth: AuthContext = Depends(get_current_
 async def update_organization(
     org_id: str,
     data: OrganizationUpdate,
-    auth: AuthContext = Depends(get_current_auth),
+    auth: AuthContext = Depends(require_org_admin),
 ):
     """Update organization. Must match authenticated org."""
     if org_id != auth.org_id:

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from src.auth import AuthContext, get_current_auth
+from src.auth import AuthContext, require_org_admin
 from src.db import supabase
 from src.models.entitlements import EntitlementCreate, EntitlementResponse, EntitlementUpdate
 
@@ -10,9 +10,16 @@ router = APIRouter(prefix="/api/entitlements", tags=["entitlements"])
 @router.get("/", response_model=list[EntitlementResponse])
 async def list_entitlements(
     company_id: str | None = Query(None),
-    auth: AuthContext = Depends(get_current_auth),
+    auth: AuthContext = Depends(require_org_admin),
 ):
     """List entitlements in the organization. Optionally filter by company_id."""
+    if company_id:
+        company_check = supabase.table("companies").select("id").eq(
+            "id", company_id
+        ).eq("org_id", auth.org_id).is_("deleted_at", "null").execute()
+        if not company_check.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
     query = supabase.table("company_entitlements").select("*").eq(
         "org_id", auth.org_id
     )
@@ -25,7 +32,7 @@ async def list_entitlements(
 
 
 @router.post("/", response_model=EntitlementResponse, status_code=status.HTTP_201_CREATED)
-async def create_entitlement(data: EntitlementCreate, auth: AuthContext = Depends(get_current_auth)):
+async def create_entitlement(data: EntitlementCreate, auth: AuthContext = Depends(require_org_admin)):
     """Create a new entitlement for a company."""
     # Validate company belongs to org
     company_check = supabase.table("companies").select("id").eq(
@@ -70,7 +77,7 @@ async def create_entitlement(data: EntitlementCreate, auth: AuthContext = Depend
 
 
 @router.get("/{entitlement_id}", response_model=EntitlementResponse)
-async def get_entitlement(entitlement_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def get_entitlement(entitlement_id: str, auth: AuthContext = Depends(require_org_admin)):
     """Get an entitlement by ID."""
     result = supabase.table("company_entitlements").select("*").eq(
         "id", entitlement_id
@@ -86,7 +93,7 @@ async def get_entitlement(entitlement_id: str, auth: AuthContext = Depends(get_c
 async def update_entitlement(
     entitlement_id: str,
     data: EntitlementUpdate,
-    auth: AuthContext = Depends(get_current_auth),
+    auth: AuthContext = Depends(require_org_admin),
 ):
     """Update an entitlement (status, provider_config)."""
     update_data = data.model_dump(exclude_unset=True)
@@ -106,7 +113,7 @@ async def update_entitlement(
 
 
 @router.delete("/{entitlement_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_entitlement(entitlement_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def delete_entitlement(entitlement_id: str, auth: AuthContext = Depends(require_org_admin)):
     """Delete an entitlement."""
     result = supabase.table("company_entitlements").delete().eq(
         "id", entitlement_id

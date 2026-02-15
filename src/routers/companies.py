@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
-from src.auth import AuthContext, get_current_auth
+from src.auth import AuthContext, require_org_admin
 from src.db import supabase
 from src.models.companies import CompanyCreate, CompanyResponse, CompanyUpdate
 
@@ -8,7 +8,7 @@ router = APIRouter(prefix="/api/companies", tags=["companies"])
 
 
 @router.get("/", response_model=list[CompanyResponse])
-async def list_companies(auth: AuthContext = Depends(get_current_auth)):
+async def list_companies(auth: AuthContext = Depends(require_org_admin)):
     """List all companies in the organization."""
     result = supabase.table("companies").select("*").eq(
         "org_id", auth.org_id
@@ -18,7 +18,7 @@ async def list_companies(auth: AuthContext = Depends(get_current_auth)):
 
 
 @router.post("/", response_model=CompanyResponse, status_code=status.HTTP_201_CREATED)
-async def create_company(data: CompanyCreate, auth: AuthContext = Depends(get_current_auth)):
+async def create_company(data: CompanyCreate, auth: AuthContext = Depends(require_org_admin)):
     """Create a new company in the organization."""
     insert_data = {
         "org_id": auth.org_id,
@@ -32,7 +32,7 @@ async def create_company(data: CompanyCreate, auth: AuthContext = Depends(get_cu
 
 
 @router.get("/{company_id}", response_model=CompanyResponse)
-async def get_company(company_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def get_company(company_id: str, auth: AuthContext = Depends(require_org_admin)):
     """Get a company by ID."""
     result = supabase.table("companies").select("*").eq(
         "id", company_id
@@ -48,7 +48,7 @@ async def get_company(company_id: str, auth: AuthContext = Depends(get_current_a
 async def update_company(
     company_id: str,
     data: CompanyUpdate,
-    auth: AuthContext = Depends(get_current_auth),
+    auth: AuthContext = Depends(require_org_admin),
 ):
     """Update a company."""
     update_data = data.model_dump(exclude_unset=True)
@@ -68,7 +68,7 @@ async def update_company(
 
 
 @router.delete("/{company_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_company(company_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def delete_company(company_id: str, auth: AuthContext = Depends(require_org_admin)):
     """Soft delete a company."""
     result = supabase.table("companies").update({
         "deleted_at": datetime.now(timezone.utc).isoformat()

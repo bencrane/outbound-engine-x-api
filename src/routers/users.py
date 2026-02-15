@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from passlib.hash import bcrypt
-from src.auth import AuthContext, get_current_auth
+from src.auth import AuthContext, require_org_admin
 from src.db import supabase
 from src.models.users import UserCreate, UserResponse, UserUpdate
 
@@ -11,9 +11,16 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 @router.get("/", response_model=list[UserResponse])
 async def list_users(
     company_id: str | None = Query(None),
-    auth: AuthContext = Depends(get_current_auth),
+    auth: AuthContext = Depends(require_org_admin),
 ):
     """List users in the organization. Optionally filter by company_id."""
+    if company_id:
+        company_check = supabase.table("companies").select("id").eq(
+            "id", company_id
+        ).eq("org_id", auth.org_id).is_("deleted_at", "null").execute()
+        if not company_check.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
     query = supabase.table("users").select(
         "id, email, company_id, name_first, name_last, role, created_at, updated_at"
     ).eq("org_id", auth.org_id).is_("deleted_at", "null")
@@ -26,7 +33,7 @@ async def list_users(
 
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(data: UserCreate, auth: AuthContext = Depends(get_current_auth)):
+async def create_user(data: UserCreate, auth: AuthContext = Depends(require_org_admin)):
     """Create a new user in the organization."""
     # Validate company belongs to org if provided
     if data.company_id:
@@ -64,7 +71,7 @@ async def create_user(data: UserCreate, auth: AuthContext = Depends(get_current_
 
 
 @router.get("/{user_id}", response_model=UserResponse)
-async def get_user(user_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def get_user(user_id: str, auth: AuthContext = Depends(require_org_admin)):
     """Get a user by ID."""
     result = supabase.table("users").select(
         "id, email, company_id, name_first, name_last, role, created_at, updated_at"
@@ -80,7 +87,7 @@ async def get_user(user_id: str, auth: AuthContext = Depends(get_current_auth)):
 async def update_user(
     user_id: str,
     data: UserUpdate,
-    auth: AuthContext = Depends(get_current_auth),
+    auth: AuthContext = Depends(require_org_admin),
 ):
     """Update a user."""
     update_data = data.model_dump(exclude_unset=True)
@@ -123,7 +130,7 @@ async def update_user(
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user(user_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def delete_user(user_id: str, auth: AuthContext = Depends(require_org_admin)):
     """Soft delete a user."""
     result = supabase.table("users").update({
         "deleted_at": datetime.now(timezone.utc).isoformat()

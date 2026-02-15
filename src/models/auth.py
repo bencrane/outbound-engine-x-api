@@ -36,5 +36,6 @@ class TokenCreateResponse(BaseModel):
 class MeResponse(BaseModel):
     user_id: str
     org_id: str
+    role: str
     company_id: str | None
     auth_method: str
