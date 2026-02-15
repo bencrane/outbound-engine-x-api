@@ -117,8 +117,20 @@ class AuthContext:
 
 ## Workflow
 
-- **"commit"** means: stage, commit, and push to GitHub. Always push.
+- **"commit"**, **"deploy"**, **"ship"** all mean: stage, commit, and push to GitHub. Always push.
+- Railway auto-deploys from GitHub on push to main.
+- For detailed AI context, see `docs/AI_CONTEXT.md`.
 
 ## Environment Variables
 
 See `.env.example` for required values. Never commit `.env`.
+
+## Local Development
+
+Always activate the virtual environment before running commands:
+
+```bash
+source .venv/bin/activate
+```
+
+This is a one-time setup. The `.venv` persists between sessions — it just needs to be activated.

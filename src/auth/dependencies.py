@@ -1,8 +1,8 @@
 import hashlib
 from datetime import datetime, timezone
 from fastapi import Header, HTTPException, status
-from src.auth.context import AuthContext
-from src.auth.jwt import decode_access_token
+from src.auth.context import AuthContext, SuperAdminContext
+from src.auth.jwt import decode_access_token, decode_super_admin_token
 from src.db import supabase
 
 
@@ -135,3 +135,40 @@ async def get_current_user(authorization: str | None = Header(None)) -> AuthCont
         )
 
     return auth
+
+
+async def get_current_super_admin(authorization: str | None = Header(None)) -> SuperAdminContext:
+    """
+    Super-admin JWT auth. Validates token type is 'super_admin' and user exists in super_admins table.
+    """
+    token = _extract_bearer_token(authorization)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authorization header",
+        )
+
+    # Decode super-admin JWT
+    payload = decode_super_admin_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired super-admin token",
+        )
+
+    # Verify super-admin exists in database
+    result = supabase.table("super_admins").select("id, email").eq(
+        "id", payload["sub"]
+    ).execute()
+
+    if not result.data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Super-admin not found",
+        )
+
+    super_admin = result.data[0]
+    return SuperAdminContext(
+        super_admin_id=super_admin["id"],
+        email=super_admin["email"],
+    )
