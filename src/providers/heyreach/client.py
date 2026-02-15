@@ -103,16 +103,30 @@ def create_campaign(
 
 
 def list_campaigns(api_key: str, timeout_seconds: float = 12.0) -> list[dict[str, Any]]:
-    data = _request_json(
-        method="GET",
-        candidate_paths=["/campaign/GetAll", "/campaigns"],
-        api_key=api_key,
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        data = _request_json(
+            method="GET",
+            candidate_paths=["/campaign/GetAll", "/campaigns"],
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
+    except HeyReachProviderError as exc:
+        # Some HeyReach deployments expose campaign listing as POST.
+        if "HTTP 405" not in str(exc):
+            raise
+        data = _request_json(
+            method="POST",
+            candidate_paths=["/campaign/GetAll", "/campaign/list", "/campaigns/list"],
+            api_key=api_key,
+            json_payload={},
+            timeout_seconds=timeout_seconds,
+        )
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and isinstance(data.get("items"), list):
         return data["items"]
+    if isinstance(data, dict) and isinstance(data.get("campaigns"), list):
+        return data["campaigns"]
     raise HeyReachProviderError("Unexpected HeyReach list campaigns response shape")
 
 
