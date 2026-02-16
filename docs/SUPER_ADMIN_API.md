@@ -334,6 +334,38 @@ GET /api/super-admin/providers
 
 ---
 
+## Observability
+
+### List Metric Snapshots
+
+```
+GET /api/super-admin/observability/metrics-snapshots
+```
+
+Query params:
+- `limit` (default 50, max 200)
+- `offset` (default 0)
+
+### Flush Metric Snapshot (Persist In-Memory Counters)
+
+```
+POST /api/super-admin/observability/metrics-snapshots/flush
+```
+
+**Request:**
+```json
+{
+  "source": "manual_flush",
+  "reset_after_persist": false
+}
+```
+
+Notes:
+- If `OBSERVABILITY_EXPORT_URL` is configured, each flush also forwards the snapshot payload to that external sink.
+- External export is best-effort and does not change the DB persist result returned by this endpoint.
+
+---
+
 ## Quick Reference
 
 | Action | Method | Endpoint |
@@ -361,3 +393,7 @@ GET /api/super-admin/providers
 | Replay webhook events by query | POST | `/api/webhooks/replay-query` |
 | Reconcile campaigns/leads | POST | `/api/internal/reconciliation/campaigns-leads` |
 | Scheduled reconcile trigger | POST | `/api/internal/reconciliation/run-scheduled` |
+| List metric snapshots | GET | `/api/super-admin/observability/metrics-snapshots` |
+| Flush metric snapshot | POST | `/api/super-admin/observability/metrics-snapshots/flush` |
+
+Operational runbook: `docs/WEBHOOK_INCIDENT_RUNBOOK.md`

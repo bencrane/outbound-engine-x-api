@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -25,6 +26,7 @@ from src.models.webhooks import (
     WebhookReplayQueryResponse,
     WebhookReplayResponse,
 )
+from src.observability import incr_metric, log_event, persist_metrics_snapshot
 
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
@@ -32,6 +34,12 @@ router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _request_id(request: Request | None) -> str | None:
+    if not request:
+        return None
+    return getattr(getattr(request, "state", None), "request_id", None)
 
 
 def _extract_event_type(payload: dict[str, Any]) -> str:
@@ -61,6 +69,20 @@ def _extract_message_id(payload: dict[str, Any]) -> str | None:
     for key in ("message_id", "messageId", "email_stats_id", "id"):
         if payload.get(key) is not None:
             return str(payload[key])
+    return None
+
+
+def _extract_sequence_step_number(payload: dict[str, Any]) -> int | None:
+    for key in ("sequence_step_number", "sequenceStepNumber", "step_number", "stepNumber", "seq_number"):
+        raw = payload.get(key)
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value >= 1:
+            return value
     return None
 
 
@@ -257,7 +279,11 @@ def _get_webhook_event(provider_slug: str, event_key: str) -> dict[str, Any] | N
     return event_result.data[0]
 
 
-def _replay_webhook_event(provider_slug: str, event_row: dict[str, Any]) -> WebhookReplayResponse:
+def _replay_webhook_event(
+    provider_slug: str,
+    event_row: dict[str, Any],
+    request_id: str | None = None,
+) -> WebhookReplayResponse:
     payload = event_row.get("payload") or {}
     event_type = event_row.get("event_type") or _extract_event_type(payload)
     campaign_external_id = _extract_campaign_id(payload)
@@ -274,6 +300,14 @@ def _replay_webhook_event(provider_slug: str, event_row: dict[str, Any]) -> Webh
             "last_error": None,
         }
     ).eq("id", event_row["id"]).execute()
+    incr_metric("webhook.replays.processed", provider_slug=provider_slug)
+    log_event(
+        "webhook_replay_processed",
+        request_id=request_id,
+        provider_slug=provider_slug,
+        event_key=event_row.get("event_key"),
+        event_type=event_type,
+    )
     return WebhookReplayResponse(
         status="replayed",
         provider_slug=provider_slug,
@@ -307,6 +341,7 @@ def _upsert_message(
         "external_message_id": external_message_id,
         "external_lead_id": _extract_lead_id(payload),
         "direction": normalize_message_direction(direction),
+        "sequence_step_number": _extract_sequence_step_number(payload),
         "subject": payload.get("subject"),
         "body": payload.get("email_body") or payload.get("body") or payload.get("message"),
         "sent_at": payload.get("sent_at") or payload.get("created_at"),
@@ -324,8 +359,10 @@ def _upsert_message(
 
 @router.post("/smartlead")
 async def ingest_smartlead_webhook(request: Request):
+    req_id = _request_id(request)
     raw_body = await request.body()
     signature = request.headers.get("X-Smartlead-Signature")
+    incr_metric("webhook.events.received", provider_slug="smartlead")
     _verify_signature_or_raise(raw_body, signature, settings.smartlead_webhook_secret)
 
     try:
@@ -336,21 +373,77 @@ async def ingest_smartlead_webhook(request: Request):
     event_type = _extract_event_type(payload)
     campaign_external_id = _extract_campaign_id(payload)
     event_key = _compute_event_key(payload, raw_body)
+    log_event(
+        "webhook_received",
+        request_id=req_id,
+        provider_slug="smartlead",
+        event_type=event_type,
+        event_key=event_key,
+        has_campaign_id=bool(campaign_external_id),
+    )
 
     campaign = _resolve_campaign(campaign_external_id, "smartlead") if campaign_external_id else None
     org_id = campaign["org_id"] if campaign else None
     company_id = campaign["company_id"] if campaign else None
 
-    _persist_event_or_raise_duplicate("smartlead", event_key, event_type, payload, org_id, company_id)
-    _apply_event_to_local_state(campaign=campaign, event_type=event_type, payload=payload)
+    try:
+        _persist_event_or_raise_duplicate("smartlead", event_key, event_type, payload, org_id, company_id)
+        _apply_event_to_local_state(campaign=campaign, event_type=event_type, payload=payload)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_200_OK:
+            incr_metric("webhook.events.duplicate", provider_slug="smartlead")
+            log_event(
+                "webhook_duplicate_ignored",
+                request_id=req_id,
+                provider_slug="smartlead",
+                event_type=event_type,
+                event_key=event_key,
+            )
+        else:
+            incr_metric("webhook.events.failed", provider_slug="smartlead")
+            log_event(
+                "webhook_failed",
+                level=logging.WARNING,
+                request_id=req_id,
+                provider_slug="smartlead",
+                event_type=event_type,
+                event_key=event_key,
+                status_code=exc.status_code,
+                detail=exc.detail,
+            )
+        raise
+    except Exception as exc:
+        incr_metric("webhook.events.failed", provider_slug="smartlead")
+        log_event(
+            "webhook_failed",
+            level=logging.ERROR,
+            request_id=req_id,
+            provider_slug="smartlead",
+            event_type=event_type,
+            event_key=event_key,
+            error=str(exc),
+        )
+        raise
+
+    incr_metric("webhook.events.processed", provider_slug="smartlead")
+    log_event(
+        "webhook_processed",
+        request_id=req_id,
+        provider_slug="smartlead",
+        event_type=event_type,
+        event_key=event_key,
+        campaign_found=bool(campaign),
+    )
 
     return {"status": "processed", "event_type": event_type, "event_key": event_key}
 
 
 @router.post("/heyreach")
 async def ingest_heyreach_webhook(request: Request):
+    req_id = _request_id(request)
     raw_body = await request.body()
     signature = request.headers.get("X-HeyReach-Signature")
+    incr_metric("webhook.events.received", provider_slug="heyreach")
     _verify_signature_or_raise(raw_body, signature, settings.heyreach_webhook_secret)
 
     try:
@@ -361,13 +454,67 @@ async def ingest_heyreach_webhook(request: Request):
     event_type = _extract_event_type(payload)
     campaign_external_id = _extract_campaign_id(payload)
     event_key = _compute_event_key(payload, raw_body)
+    log_event(
+        "webhook_received",
+        request_id=req_id,
+        provider_slug="heyreach",
+        event_type=event_type,
+        event_key=event_key,
+        has_campaign_id=bool(campaign_external_id),
+    )
 
     campaign = _resolve_campaign(campaign_external_id, "heyreach") if campaign_external_id else None
     org_id = campaign["org_id"] if campaign else None
     company_id = campaign["company_id"] if campaign else None
 
-    _persist_event_or_raise_duplicate("heyreach", event_key, event_type, payload, org_id, company_id)
-    _apply_event_to_local_state(campaign=campaign, event_type=event_type, payload=payload)
+    try:
+        _persist_event_or_raise_duplicate("heyreach", event_key, event_type, payload, org_id, company_id)
+        _apply_event_to_local_state(campaign=campaign, event_type=event_type, payload=payload)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_200_OK:
+            incr_metric("webhook.events.duplicate", provider_slug="heyreach")
+            log_event(
+                "webhook_duplicate_ignored",
+                request_id=req_id,
+                provider_slug="heyreach",
+                event_type=event_type,
+                event_key=event_key,
+            )
+        else:
+            incr_metric("webhook.events.failed", provider_slug="heyreach")
+            log_event(
+                "webhook_failed",
+                level=logging.WARNING,
+                request_id=req_id,
+                provider_slug="heyreach",
+                event_type=event_type,
+                event_key=event_key,
+                status_code=exc.status_code,
+                detail=exc.detail,
+            )
+        raise
+    except Exception as exc:
+        incr_metric("webhook.events.failed", provider_slug="heyreach")
+        log_event(
+            "webhook_failed",
+            level=logging.ERROR,
+            request_id=req_id,
+            provider_slug="heyreach",
+            event_type=event_type,
+            event_key=event_key,
+            error=str(exc),
+        )
+        raise
+
+    incr_metric("webhook.events.processed", provider_slug="heyreach")
+    log_event(
+        "webhook_processed",
+        request_id=req_id,
+        provider_slug="heyreach",
+        event_type=event_type,
+        event_key=event_key,
+        campaign_found=bool(campaign),
+    )
 
     return {"status": "processed", "event_type": event_type, "event_key": event_key}
 
@@ -401,13 +548,25 @@ async def list_webhook_events(
     result = query.execute()
     rows = result.data or []
     rows = sorted(rows, key=lambda row: row.get("created_at") or "", reverse=True)
-    return rows[bounded_offset:bounded_offset + bounded_limit]
+    result_rows = rows[bounded_offset:bounded_offset + bounded_limit]
+    log_event(
+        "webhook_events_listed",
+        provider_slug=provider_slug,
+        event_type=event_type,
+        org_id=org_id,
+        company_id=company_id,
+        returned=len(result_rows),
+        limit=bounded_limit,
+        offset=bounded_offset,
+    )
+    return result_rows
 
 
 @router.post("/replay/{provider_slug}/{event_key}", response_model=WebhookReplayResponse)
 async def replay_webhook_event(
     provider_slug: str,
     event_key: str,
+    request: Request,
     _ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
     if provider_slug not in {"smartlead", "heyreach"}:
@@ -415,17 +574,20 @@ async def replay_webhook_event(
     event_row = _get_webhook_event(provider_slug, event_key)
     if not event_row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook event not found")
-    return _replay_webhook_event(provider_slug, event_row)
+    req_id = _request_id(request)
+    return _replay_webhook_event(provider_slug, event_row, request_id=req_id)
 
 
 @router.post("/replay-bulk", response_model=WebhookReplayBulkResponse)
 async def replay_webhook_events_bulk(
     data: WebhookReplayBulkRequest,
+    request: Request,
     _ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
     if not data.event_keys:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="event_keys cannot be empty")
 
+    req_id = _request_id(request)
     replayed = 0
     not_found = 0
     results: list[WebhookReplayBulkItem] = []
@@ -436,7 +598,7 @@ async def replay_webhook_events_bulk(
             not_found += 1
             results.append(WebhookReplayBulkItem(event_key=event_key, status="not_found", event_type=None))
             continue
-        replay_result = _replay_webhook_event(data.provider_slug, event_row)
+        replay_result = _replay_webhook_event(data.provider_slug, event_row, request_id=req_id)
         replayed += 1
         results.append(
             WebhookReplayBulkItem(
@@ -446,6 +608,24 @@ async def replay_webhook_events_bulk(
             )
         )
 
+    incr_metric("webhook.replays.bulk", provider_slug=data.provider_slug)
+    log_event(
+        "webhook_bulk_replay_completed",
+        request_id=req_id,
+        provider_slug=data.provider_slug,
+        requested=len(data.event_keys),
+        replayed=replayed,
+        not_found=not_found,
+    )
+    persist_metrics_snapshot(
+        supabase_client=supabase,
+        source="webhook_replay_bulk",
+        request_id=req_id,
+        reset_after_persist=False,
+        export_url=settings.observability_export_url,
+        export_bearer_token=settings.observability_export_bearer_token,
+        export_timeout_seconds=settings.observability_export_timeout_seconds,
+    )
     return WebhookReplayBulkResponse(
         provider_slug=data.provider_slug,
         requested=len(data.event_keys),
@@ -458,8 +638,10 @@ async def replay_webhook_events_bulk(
 @router.post("/replay-query", response_model=WebhookReplayQueryResponse)
 async def replay_webhook_events_by_query(
     data: WebhookReplayQueryRequest,
+    request: Request,
     _ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
+    req_id = _request_id(request)
     query = supabase.table("webhook_events").select(
         "id, provider_slug, event_key, event_type, status, org_id, company_id, payload, replay_count, created_at"
     ).eq("provider_slug", data.provider_slug)
@@ -493,7 +675,7 @@ async def replay_webhook_events_by_query(
     replayed = 0
     results: list[WebhookReplayBulkItem] = []
     for row in selected:
-        replay_result = _replay_webhook_event(data.provider_slug, row)
+        replay_result = _replay_webhook_event(data.provider_slug, row, request_id=req_id)
         replayed += 1
         results.append(
             WebhookReplayBulkItem(
@@ -503,6 +685,24 @@ async def replay_webhook_events_by_query(
             )
         )
 
+    incr_metric("webhook.replays.query", provider_slug=data.provider_slug)
+    log_event(
+        "webhook_query_replay_completed",
+        request_id=req_id,
+        provider_slug=data.provider_slug,
+        matched=len(selected),
+        replayed=replayed,
+        limit=data.limit,
+    )
+    persist_metrics_snapshot(
+        supabase_client=supabase,
+        source="webhook_replay_query",
+        request_id=req_id,
+        reset_after_persist=False,
+        export_url=settings.observability_export_url,
+        export_bearer_token=settings.observability_export_bearer_token,
+        export_timeout_seconds=settings.observability_export_timeout_seconds,
+    )
     return WebhookReplayQueryResponse(
         provider_slug=data.provider_slug,
         matched=len(selected),

@@ -268,3 +268,87 @@ def test_linkedin_campaign_metrics(monkeypatch):
     assert body["normalized"]["total_leads"] == 20
     assert body["normalized"]["connected"] == 5
     _clear()
+
+
+def test_linkedin_org_level_non_admin_cannot_create(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(linkedin_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-2", role="user", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/linkedin/campaigns/", json={"name": "Denied", "company_id": "c-1"})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Admin role required"
+    _clear()
+
+
+def test_linkedin_org_admin_requires_company_id_for_list(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(linkedin_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/linkedin/campaigns/")
+    assert response.status_code == 400
+    assert "company_id is required" in response.json()["detail"]
+    _clear()
+
+
+def test_linkedin_company_user_cannot_target_different_company(monkeypatch):
+    tables = _base_tables()
+    tables["companies"].append({"id": "c-2", "org_id": "org-1", "deleted_at": None})
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(linkedin_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/linkedin/campaigns/", json={"name": "Blocked", "company_id": "c-2"})
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Company not found"
+    _clear()
+
+
+def test_linkedin_company_user_cannot_access_other_company_campaign(monkeypatch):
+    tables = _base_tables()
+    tables["companies"].append({"id": "c-2", "org_id": "org-1", "deleted_at": None})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-li-2",
+            "org_id": "org-1",
+            "company_id": "c-2",
+            "provider_id": "prov-heyreach",
+            "external_campaign_id": "hr-2",
+            "name": "Other Company Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-9",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(linkedin_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/linkedin/campaigns/cmp-li-2")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Campaign not found"
+    _clear()
+
+
+def test_linkedin_create_maps_transient_provider_errors_to_503(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(linkedin_router, "supabase", fake_db)
+
+    def _raise_transient(**kwargs):
+        raise linkedin_router.HeyReachProviderError("HeyReach API returned HTTP 503: upstream unavailable")
+
+    monkeypatch.setattr(linkedin_router, "heyreach_create_campaign", _raise_transient)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/linkedin/campaigns/", json={"name": "LinkedIn transient"})
+    assert response.status_code == 503
+    assert "transient" in response.json()["detail"]
+    _clear()

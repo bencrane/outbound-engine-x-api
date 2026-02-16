@@ -40,6 +40,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _provider_error_status(exc: HeyReachProviderError) -> int:
+    return status.HTTP_503_SERVICE_UNAVAILABLE if exc.retryable else status.HTTP_502_BAD_GATEWAY
+
+
+def _provider_error_detail(prefix: str, exc: HeyReachProviderError) -> str:
+    return f"{prefix} [{exc.category}]: {exc}"
+
+
 def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
     if auth.company_id:
         if company_id and company_id != auth.company_id:
@@ -237,7 +245,10 @@ async def create_linkedin_campaign(
             delay_between_actions=data.delay_between_actions,
         )
     except HeyReachProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Campaign create failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Campaign create failed", exc),
+        ) from exc
 
     external_campaign_id = provider_campaign.get("id") or provider_campaign.get("campaignId")
     if external_campaign_id is None:
@@ -306,7 +317,10 @@ async def mutate_linkedin_campaign_status(
             provider_response = heyreach_resume_campaign(api_key=api_key, campaign_id=campaign["external_campaign_id"])
             next_status = "ACTIVE"
     except HeyReachProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Campaign action failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Campaign action failed", exc),
+        ) from exc
 
     updated = (
         supabase.table("company_campaigns")
@@ -339,7 +353,10 @@ async def add_linkedin_campaign_leads(
             limit=500,
         )
     except HeyReachProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Campaign leads add failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Campaign leads add failed", exc),
+        ) from exc
 
     incoming = {lead.email.lower() for lead in data.leads}
     affected = 0
@@ -386,7 +403,10 @@ async def update_linkedin_campaign_lead_status(
     try:
         heyreach_update_lead_status(api_key=api_key, lead_id=lead["external_lead_id"], status_value=data.status)
     except HeyReachProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Lead status update failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Lead status update failed", exc),
+        ) from exc
 
     normalized = normalize_lead_status(data.status)
     (
@@ -417,7 +437,10 @@ async def send_linkedin_campaign_message(
             template_id=data.template_id,
         )
     except HeyReachProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Send message failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Send message failed", exc),
+        ) from exc
 
     external_message_id = str(provider.get("messageId") or provider.get("id") or f"local-{datetime.now(timezone.utc).timestamp()}")
     row = (
@@ -451,7 +474,10 @@ async def get_linkedin_campaign_metrics(campaign_id: str, auth: AuthContext = De
     try:
         raw = heyreach_get_campaign_metrics(api_key=api_key, campaign_id=campaign["external_campaign_id"])
     except HeyReachProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Campaign metrics fetch failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Campaign metrics fetch failed", exc),
+        ) from exc
 
     normalized = {
         "total_leads": raw.get("totalLeads"),

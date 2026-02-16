@@ -40,3 +40,60 @@ class CampaignAnalyticsDashboardItem(BaseModel):
     reply_rate: float
     last_activity_at: datetime | None = None
     updated_at: datetime
+
+
+class ClientAnalyticsRollupItem(BaseModel):
+    company_id: str
+    campaigns_total: int
+    leads_total: int
+    outbound_messages_total: int
+    replies_total: int
+    reply_rate: float
+    last_activity_at: datetime | None = None
+    updated_at: datetime
+
+
+class ReliabilityByProviderItem(BaseModel):
+    provider_slug: str
+    events_total: int
+    replayed_events_total: int
+    replay_count_total: int
+    errors_total: int
+
+
+class ReliabilityAnalyticsResponse(BaseModel):
+    company_id: str | None = None
+    events_total: int
+    replayed_events_total: int
+    replay_count_total: int
+    errors_total: int
+    by_provider: list[ReliabilityByProviderItem]
+    from_ts: datetime | None = None
+    to_ts: datetime | None = None
+    updated_at: datetime
+
+
+class MessageSyncHealthItem(BaseModel):
+    company_id: str
+    campaign_id: str
+    campaign_name: str
+    campaign_status: str
+    provider_id: str
+    message_sync_status: str | None = None
+    last_message_sync_at: datetime | None = None
+    last_message_sync_error: str | None = None
+    leads_total: int
+    messages_total: int
+    inbound_total: int
+    outbound_total: int
+    updated_at: datetime
+
+
+class SequenceStepPerformanceItem(BaseModel):
+    campaign_id: str
+    sequence_step_number: int
+    outbound_messages_total: int
+    replies_total: int
+    reply_rate: float
+    last_activity_at: datetime | None = None
+    updated_at: datetime

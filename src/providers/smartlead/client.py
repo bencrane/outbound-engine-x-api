@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+import time
 from typing import Any
 
 import httpx
@@ -10,6 +12,73 @@ SMARTLEAD_API_BASE = "https://server.smartlead.ai/api/v1"
 
 class SmartleadProviderError(Exception):
     """Provider-level exception for Smartlead integration failures."""
+
+    @property
+    def category(self) -> str:
+        message = str(self).lower()
+        if (
+            "connectivity error" in message
+            or "http 429" in message
+            or "http 500" in message
+            or "http 502" in message
+            or "http 503" in message
+            or "http 504" in message
+        ):
+            return "transient"
+        if (
+            "invalid smartlead api key" in message
+            or "endpoint not found" in message
+            or "missing smartlead api key" in message
+            or "unexpected smartlead" in message
+        ):
+            return "terminal"
+        return "unknown"
+
+    @property
+    def retryable(self) -> bool:
+        return self.category == "transient"
+
+
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY_SECONDS = 0.25
+_RETRY_MAX_DELAY_SECONDS = 2.0
+
+
+def _request_with_retry(
+    *,
+    method: str,
+    url: str,
+    timeout_seconds: float,
+    params: dict[str, Any] | None = None,
+    json_payload: dict[str, Any] | None = None,
+) -> httpx.Response:
+    last_exc: httpx.HTTPError | None = None
+    response: httpx.Response | None = None
+    for attempt in range(1, _MAX_RETRY_ATTEMPTS + 1):
+        try:
+            with httpx.Client(timeout=timeout_seconds) as client:
+                response = client.request(method=method, url=url, params=params, json=json_payload)
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt >= _MAX_RETRY_ATTEMPTS:
+                raise
+            delay = min(_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), _RETRY_MAX_DELAY_SECONDS)
+            delay += random.uniform(0, delay * 0.2)
+            time.sleep(delay)
+            continue
+
+        if response.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRY_ATTEMPTS:
+            delay = min(_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), _RETRY_MAX_DELAY_SECONDS)
+            delay += random.uniform(0, delay * 0.2)
+            time.sleep(delay)
+            continue
+        return response
+
+    if last_exc:
+        raise last_exc
+    assert response is not None
+    return response
 
 
 def validate_api_key(api_key: str, timeout_seconds: float = 8.0) -> None:
@@ -25,8 +94,7 @@ def validate_api_key(api_key: str, timeout_seconds: float = 8.0) -> None:
     params: dict[str, Any] = {"api_key": api_key, "limit": 1}
 
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
-            response = client.get(url, params=params)
+        response = _request_with_retry(method="GET", url=url, timeout_seconds=timeout_seconds, params=params)
     except httpx.HTTPError as exc:
         raise SmartleadProviderError(f"Smartlead connectivity error: {exc}") from exc
 
@@ -57,8 +125,12 @@ def list_email_accounts(api_key: str, timeout_seconds: float = 12.0) -> list[dic
     last_error: str | None = None
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.get(url, params={"api_key": api_key})
+            response = _request_with_retry(
+                method="GET",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -107,8 +179,7 @@ def list_campaigns(
     last_error: str | None = None
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.get(url, params=params)
+            response = _request_with_retry(method="GET", url=url, timeout_seconds=timeout_seconds, params=params)
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -121,8 +192,12 @@ def list_campaigns(
         if response.status_code == 400 and "limit" in (response.text or "").lower():
             # Some Smartlead deployments reject limit/offset query args.
             try:
-                with httpx.Client(timeout=timeout_seconds) as client:
-                    response = client.get(url, params={"api_key": api_key})
+                response = _request_with_retry(
+                    method="GET",
+                    url=url,
+                    timeout_seconds=timeout_seconds,
+                    params={"api_key": api_key},
+                )
             except httpx.HTTPError as exc:
                 last_error = f"Smartlead connectivity error: {exc}"
                 continue
@@ -165,8 +240,13 @@ def create_campaign(api_key: str, name: str, client_id: int, timeout_seconds: fl
     last_error: str | None = None
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.post(url, params={"api_key": api_key}, json=payload)
+            response = _request_with_retry(
+                method="POST",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+                json_payload=payload,
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -212,8 +292,13 @@ def update_campaign_status(
     last_error: str | None = None
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.post(url, params={"api_key": api_key}, json=payload)
+            response = _request_with_retry(
+                method="POST",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+                json_payload=payload,
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -255,8 +340,12 @@ def get_campaign_sequence(
     last_error: str | None = None
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.get(url, params={"api_key": api_key})
+            response = _request_with_retry(
+                method="GET",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -306,8 +395,13 @@ def save_campaign_sequence(
     last_error: str | None = None
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.post(url, params={"api_key": api_key}, json=payload)
+            response = _request_with_retry(
+                method="POST",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+                json_payload=payload,
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -349,8 +443,13 @@ def add_campaign_leads(
 
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.post(url, params={"api_key": api_key}, json=payload)
+            response = _request_with_retry(
+                method="POST",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+                json_payload=payload,
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -393,8 +492,7 @@ def get_campaign_leads(
 
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.get(url, params=params)
+            response = _request_with_retry(method="GET", url=url, timeout_seconds=timeout_seconds, params=params)
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -441,8 +539,12 @@ def _mutate_campaign_lead_status(
 
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.post(url, params={"api_key": api_key})
+            response = _request_with_retry(
+                method="POST",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -494,8 +596,12 @@ def get_campaign_lead_messages(
     last_error: str | None = None
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.get(url, params={"api_key": api_key})
+            response = _request_with_retry(
+                method="GET",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -540,8 +646,12 @@ def get_campaign_replies(
     last_error: str | None = None
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.get(url, params={"api_key": api_key})
+            response = _request_with_retry(
+                method="GET",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue
@@ -588,8 +698,12 @@ def get_campaign_analytics(
 
     for url in candidate_urls:
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.get(url, params={"api_key": api_key})
+            response = _request_with_retry(
+                method="GET",
+                url=url,
+                timeout_seconds=timeout_seconds,
+                params={"api_key": api_key},
+            )
         except httpx.HTTPError as exc:
             last_error = f"Smartlead connectivity error: {exc}"
             continue

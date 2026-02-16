@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+import time
 from typing import Any
 
 import httpx
@@ -11,6 +13,37 @@ HEYREACH_API_BASE = "https://api.heyreach.io/api/public"
 class HeyReachProviderError(Exception):
     """Provider-level exception for HeyReach integration failures."""
 
+    @property
+    def category(self) -> str:
+        message = str(self).lower()
+        if (
+            "connectivity error" in message
+            or "http 429" in message
+            or "http 500" in message
+            or "http 502" in message
+            or "http 503" in message
+            or "http 504" in message
+        ):
+            return "transient"
+        if (
+            "invalid heyreach api key" in message
+            or "endpoint not found" in message
+            or "missing heyreach api key" in message
+            or "unexpected heyreach" in message
+        ):
+            return "terminal"
+        return "unknown"
+
+    @property
+    def retryable(self) -> bool:
+        return self.category == "transient"
+
+
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY_SECONDS = 0.25
+_RETRY_MAX_DELAY_SECONDS = 2.0
+
 
 def _headers(api_key: str) -> dict[str, str]:
     return {
@@ -18,6 +51,47 @@ def _headers(api_key: str) -> dict[str, str]:
         "X-API-KEY": api_key,
         "Content-Type": "application/json",
     }
+
+
+def _request_with_retry(
+    *,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    timeout_seconds: float,
+    json_payload: dict[str, Any] | None = None,
+) -> httpx.Response:
+    last_exc: httpx.HTTPError | None = None
+    response: httpx.Response | None = None
+    for attempt in range(1, _MAX_RETRY_ATTEMPTS + 1):
+        try:
+            with httpx.Client(timeout=timeout_seconds) as client:
+                response = client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    json=json_payload,
+                )
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt >= _MAX_RETRY_ATTEMPTS:
+                raise
+            delay = min(_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), _RETRY_MAX_DELAY_SECONDS)
+            delay += random.uniform(0, delay * 0.2)
+            time.sleep(delay)
+            continue
+
+        if response.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRY_ATTEMPTS:
+            delay = min(_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), _RETRY_MAX_DELAY_SECONDS)
+            delay += random.uniform(0, delay * 0.2)
+            time.sleep(delay)
+            continue
+        return response
+
+    if last_exc:
+        raise last_exc
+    assert response is not None
+    return response
 
 
 def _request_json(
@@ -34,13 +108,13 @@ def _request_json(
     for path in candidate_paths:
         url = f"{HEYREACH_API_BASE}{path}"
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.request(
-                    method=method,
-                    url=url,
-                    headers=_headers(api_key),
-                    json=json_payload,
-                )
+            response = _request_with_retry(
+                method=method,
+                url=url,
+                headers=_headers(api_key),
+                json_payload=json_payload,
+                timeout_seconds=timeout_seconds,
+            )
         except httpx.HTTPError as exc:
             last_error = f"HeyReach connectivity error: {exc}"
             continue
@@ -288,3 +362,46 @@ def get_campaign_metrics(api_key: str, campaign_id: str | int, timeout_seconds: 
     if not isinstance(data, dict):
         raise HeyReachProviderError("Unexpected HeyReach metrics response type")
     return data
+
+
+def get_campaign_lead_messages(
+    api_key: str,
+    lead_id: str | int,
+    page: int = 1,
+    limit: int = 100,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    try:
+        data = _request_json(
+            method="GET",
+            candidate_paths=[
+                f"/lead/{lead_id}/messages",
+                f"/lead/{lead_id}/message-history",
+            ],
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
+    except HeyReachProviderError as exc:
+        text = str(exc).lower()
+        if "endpoint not found" not in text and "http 405" not in text:
+            raise
+        try:
+            data = _request_json(
+                method="POST",
+                candidate_paths=["/lead/GetMessages", "/lead/messages"],
+                api_key=api_key,
+                json_payload={"leadId": str(lead_id), "page": page, "limit": limit},
+                timeout_seconds=timeout_seconds,
+            )
+        except HeyReachProviderError as details_exc:
+            if "endpoint not found" in str(details_exc).lower():
+                return []
+            raise
+
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    if isinstance(data, dict) and isinstance(data.get("messages"), list):
+        return data["messages"]
+    return []

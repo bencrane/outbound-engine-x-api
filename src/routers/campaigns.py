@@ -23,7 +23,7 @@ from src.models.leads import (
     CampaignLeadMutationResponse,
     CampaignLeadResponse,
 )
-from src.models.messages import CampaignMessageResponse
+from src.models.messages import CampaignMessageResponse, OrgCampaignMessageResponse
 from src.models.analytics import (
     CampaignAnalyticsProviderResponse,
     CampaignAnalyticsSummaryResponse,
@@ -52,6 +52,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _provider_error_status(exc: SmartleadProviderError) -> int:
+    return status.HTTP_503_SERVICE_UNAVAILABLE if exc.retryable else status.HTTP_502_BAD_GATEWAY
+
+
+def _provider_error_detail(prefix: str, exc: SmartleadProviderError) -> str:
+    return f"{prefix} [{exc.category}]: {exc}"
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -65,6 +73,20 @@ def _parse_datetime(value: Any) -> datetime | None:
     return None
 
 
+def _extract_sequence_step_number(payload: dict[str, Any]) -> int | None:
+    for key in ("sequence_step_number", "sequenceStepNumber", "step_number", "stepNumber", "seq_number"):
+        raw = payload.get(key)
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value >= 1:
+            return value
+    return None
+
+
 def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
     if auth.company_id:
         if company_id and company_id != auth.company_id:
@@ -73,6 +95,38 @@ def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
 
     if auth.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+    if not company_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="company_id is required for org-level callers",
+        )
+    return company_id
+
+
+def _resolve_company_scope(
+    auth: AuthContext,
+    *,
+    company_id: str | None,
+    all_companies: bool,
+) -> str | None:
+    if auth.company_id:
+        if all_companies:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="All-companies view is admin only")
+        if company_id and company_id != auth.company_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+        return auth.company_id
+
+    if auth.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+
+    if all_companies:
+        if company_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="company_id cannot be combined with all_companies=true",
+            )
+        return None
+
     if not company_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -215,6 +269,7 @@ def _extract_provider_message(message: dict[str, Any], default_direction: str = 
         "external_message_id": str(external_id),
         "external_lead_id": str(message.get("lead_id")) if message.get("lead_id") is not None else None,
         "direction": direction,
+        "sequence_step_number": _extract_sequence_step_number(message),
         "subject": message.get("subject"),
         "body": message.get("email_body") or message.get("body") or message.get("message"),
         "sent_at": message.get("sent_at") or message.get("created_at") or message.get("timestamp"),
@@ -245,6 +300,7 @@ def _upsert_campaign_message(
         "external_message_id": parsed["external_message_id"],
         "external_lead_id": parsed.get("external_lead_id"),
         "direction": parsed.get("direction") or "unknown",
+        "sequence_step_number": parsed.get("sequence_step_number"),
         "subject": parsed.get("subject"),
         "body": parsed.get("body"),
         "sent_at": parsed.get("sent_at"),
@@ -287,7 +343,10 @@ async def create_campaign(
             client_id=int(smartlead_client_id),
         )
     except SmartleadProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Campaign create failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Campaign create failed", exc),
+        ) from exc
 
     external_campaign_id = provider_campaign.get("id")
     if external_campaign_id is None:
@@ -314,19 +373,90 @@ async def create_campaign(
 @router.get("/", response_model=list[CampaignResponse])
 async def list_campaigns(
     company_id: str | None = Query(None),
+    all_companies: bool = Query(False),
     mine_only: bool = Query(False),
     auth: AuthContext = Depends(get_current_auth),
 ):
-    resolved_company_id = _resolve_company_id(auth, company_id)
-    _get_company(auth, resolved_company_id)
+    resolved_company_id = _resolve_company_scope(
+        auth,
+        company_id=company_id,
+        all_companies=all_companies,
+    )
+    if resolved_company_id:
+        _get_company(auth, resolved_company_id)
 
     query = supabase.table("company_campaigns").select(
         "id, company_id, provider_id, external_campaign_id, name, status, created_by_user_id, created_at, updated_at"
-    ).eq("org_id", auth.org_id).eq("company_id", resolved_company_id).is_("deleted_at", "null")
+    ).eq("org_id", auth.org_id).is_("deleted_at", "null")
+    if resolved_company_id:
+        query = query.eq("company_id", resolved_company_id)
     if mine_only:
         query = query.eq("created_by_user_id", auth.user_id)
     result = query.execute()
     return result.data
+
+
+@router.get("/messages", response_model=list[OrgCampaignMessageResponse])
+async def list_messages_feed(
+    company_id: str | None = Query(None),
+    all_companies: bool = Query(False),
+    campaign_id: str | None = Query(None),
+    direction: str | None = Query(None),
+    mine_only: bool = Query(False),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    resolved_company_id = _resolve_company_scope(
+        auth,
+        company_id=company_id,
+        all_companies=all_companies,
+    )
+    if resolved_company_id:
+        _get_company(auth, resolved_company_id)
+
+    if direction is not None:
+        normalized_direction = normalize_message_direction(direction)
+    else:
+        normalized_direction = None
+
+    campaign_query = supabase.table("company_campaigns").select(
+        "id, company_id, created_by_user_id"
+    ).eq("org_id", auth.org_id).is_("deleted_at", "null")
+    if resolved_company_id:
+        campaign_query = campaign_query.eq("company_id", resolved_company_id)
+    if campaign_id:
+        campaign_query = campaign_query.eq("id", campaign_id)
+    if mine_only:
+        campaign_query = campaign_query.eq("created_by_user_id", auth.user_id)
+
+    campaigns = campaign_query.execute().data or []
+    campaign_map = {row["id"]: row for row in campaigns}
+    if not campaign_map:
+        return []
+
+    query = supabase.table("company_campaign_messages").select(
+        "id, company_id, company_campaign_id, company_campaign_lead_id, external_message_id, direction, sequence_step_number, subject, body, sent_at, updated_at"
+    ).eq("org_id", auth.org_id).is_("deleted_at", "null")
+    if resolved_company_id:
+        query = query.eq("company_id", resolved_company_id)
+    if campaign_id:
+        query = query.eq("company_campaign_id", campaign_id)
+    if normalized_direction:
+        query = query.eq("direction", normalized_direction)
+
+    rows = query.execute().data or []
+    rows = [row for row in rows if row.get("company_campaign_id") in campaign_map]
+    def _message_sort_ts(row: dict[str, Any]) -> float:
+        dt = _parse_datetime(row.get("sent_at")) or _parse_datetime(row.get("updated_at"))
+        if dt is None:
+            return 0.0
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+
+    rows = sorted(rows, key=_message_sort_ts, reverse=True)
+    return rows[offset : offset + limit]
 
 
 @router.get("/{campaign_id}", response_model=CampaignResponse)
@@ -355,7 +485,10 @@ async def update_campaign_status(
             status_value=data.status,
         )
     except SmartleadProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Campaign status update failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Campaign status update failed", exc),
+        ) from exc
 
     updated = supabase.table("company_campaigns").update(
         {
@@ -395,7 +528,10 @@ async def get_campaign_sequence(
                 version=latest["version"],
                 updated_at=latest["updated_at"],
             )
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Sequence fetch failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Sequence fetch failed", exc),
+        ) from exc
 
     snapshots = supabase.table("company_campaign_sequences").select(
         "version"
@@ -438,7 +574,10 @@ async def save_campaign_sequence(
             sequence=data.sequence,
         )
     except SmartleadProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Sequence save failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Sequence save failed", exc),
+        ) from exc
 
     snapshots = supabase.table("company_campaign_sequences").select(
         "version"
@@ -497,7 +636,10 @@ async def add_campaign_leads(
             offset=0,
         )
     except SmartleadProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Campaign leads add failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Campaign leads add failed", exc),
+        ) from exc
 
     added_emails = {lead.email.lower() for lead in data.leads}
     affected = 0
@@ -558,7 +700,10 @@ async def pause_campaign_lead(
             lead_id=lead["external_lead_id"],
         )
     except SmartleadProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Pause lead failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Pause lead failed", exc),
+        ) from exc
 
     supabase.table("company_campaign_leads").update(
         {"status": "paused", "updated_at": _now_iso()}
@@ -582,7 +727,10 @@ async def resume_campaign_lead(
             lead_id=lead["external_lead_id"],
         )
     except SmartleadProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Resume lead failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Resume lead failed", exc),
+        ) from exc
 
     supabase.table("company_campaign_leads").update(
         {"status": "active", "updated_at": _now_iso()}
@@ -606,7 +754,10 @@ async def unsubscribe_campaign_lead(
             lead_id=lead["external_lead_id"],
         )
     except SmartleadProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Unsubscribe lead failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Unsubscribe lead failed", exc),
+        ) from exc
 
     supabase.table("company_campaign_leads").update(
         {"status": "unsubscribed", "updated_at": _now_iso()}
@@ -652,7 +803,7 @@ async def list_campaign_replies(
         pass
 
     result = supabase.table("company_campaign_messages").select(
-        "id, company_campaign_id, company_campaign_lead_id, external_message_id, direction, subject, body, sent_at, updated_at"
+        "id, company_campaign_id, company_campaign_lead_id, external_message_id, direction, sequence_step_number, subject, body, sent_at, updated_at"
     ).eq("org_id", auth.org_id).eq("company_campaign_id", campaign_id).eq("direction", "inbound").is_("deleted_at", "null").execute()
     return result.data
 
@@ -690,7 +841,7 @@ async def list_campaign_lead_messages(
         pass
 
     result = supabase.table("company_campaign_messages").select(
-        "id, company_campaign_id, company_campaign_lead_id, external_message_id, direction, subject, body, sent_at, updated_at"
+        "id, company_campaign_id, company_campaign_lead_id, external_message_id, direction, sequence_step_number, subject, body, sent_at, updated_at"
     ).eq("org_id", auth.org_id).eq("company_campaign_id", campaign_id).eq(
         "company_campaign_lead_id", lead_id
     ).is_("deleted_at", "null").execute()
@@ -767,7 +918,10 @@ async def get_campaign_analytics_provider(
             campaign_id=campaign["external_campaign_id"],
         )
     except SmartleadProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Campaign analytics fetch failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Campaign analytics fetch failed", exc),
+        ) from exc
 
     normalized = {
         "sent": raw.get("sent_count") or raw.get("sent") or raw.get("total_sent"),

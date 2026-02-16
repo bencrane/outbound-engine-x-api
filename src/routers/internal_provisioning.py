@@ -22,6 +22,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _provider_error_status(exc: SmartleadProviderError) -> int:
+    return status.HTTP_503_SERVICE_UNAVAILABLE if exc.retryable else status.HTTP_502_BAD_GATEWAY
+
+
+def _provider_error_detail(prefix: str, exc: SmartleadProviderError) -> str:
+    return f"{prefix} [{exc.category}]: {exc}"
+
+
 def _get_company(company_id: str) -> dict[str, Any]:
     result = supabase.table("companies").select("id, org_id").eq(
         "id", company_id
@@ -157,7 +165,10 @@ async def provision_email_outreach(
                 "updated_at": _now_iso(),
             }
         ).eq("id", entitlement["id"]).eq("org_id", company["org_id"]).execute()
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Provisioning failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Provisioning failed", exc),
+        ) from exc
 
     provider_config = entitlement.get("provider_config") or {}
     provider_config.update(
@@ -239,7 +250,10 @@ async def sync_email_outreach_inboxes(
     try:
         accounts = list_email_accounts(api_key)
     except SmartleadProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Inbox sync failed: {exc}") from exc
+        raise HTTPException(
+            status_code=_provider_error_status(exc),
+            detail=_provider_error_detail("Inbox sync failed", exc),
+        ) from exc
 
     synced_count = 0
     skipped_count = 0

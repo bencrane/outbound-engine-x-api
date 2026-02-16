@@ -196,21 +196,35 @@ API token management is super-admin only:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/internal/reconciliation/campaigns-leads` | Reconcile provider campaigns/leads into local DB (`dry_run` default true) |
+| POST | `/api/internal/reconciliation/campaigns-leads` | Reconcile provider campaigns/leads, Smartlead message history, and optional HeyReach best-effort lead-thread history into local DB (`dry_run` default true) |
 | POST | `/api/internal/reconciliation/run-scheduled` | Scheduler-triggered reconciliation (requires `X-Internal-Scheduler-Secret`) |
+
+Reconciliation message sync state:
+- campaign rows now track `message_sync_status`, `last_message_sync_at`, and `last_message_sync_error` to support operational health checks.
+- status values currently include `success`, `partial_error`, `error`, `skipped_webhook_only`, and `skipped_disabled`.
+
+Reconciliation message strategy:
+- `HEYREACH_MESSAGE_SYNC_MODE=webhook_only` (default): do not pull HeyReach message history; rely on webhook-ingested message state.
+- `HEYREACH_MESSAGE_SYNC_MODE=pull_best_effort`: attempt per-lead HeyReach message pulls during reconciliation; silently skip unavailable endpoints.
+
+Durable metrics export:
+- reconciliation completion and webhook replay bulk/query operations persist in-memory counters to `observability_metric_snapshots`.
+- super-admin can trigger manual snapshot flush via `POST /api/super-admin/observability/metrics-snapshots/flush`.
+- optional external forwarding is available via `OBSERVABILITY_EXPORT_URL` (+ optional `OBSERVABILITY_EXPORT_BEARER_TOKEN`, `OBSERVABILITY_EXPORT_TIMEOUT_SECONDS`); export failures are best-effort and do not fail reconciliation/replay.
 
 ### Inboxes (Capability-Facing)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/inboxes/` | List company inboxes (provider-hidden) |
+| GET | `/api/inboxes/` | List company inboxes (provider-hidden). Org-admin can use `all_companies=true` for cross-company view, or `company_id` for a specific company |
 
 ### Campaigns (Email / Smartlead-backed)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/campaigns/` | Create campaign |
-| GET | `/api/campaigns/` | List campaigns (`mine_only` optional) |
+| GET | `/api/campaigns/` | List campaigns (`mine_only` optional). Org-admin can use `all_companies=true` for cross-company view, or `company_id` for specific company scope |
+| GET | `/api/campaigns/messages` | Org/company message feed across campaigns. Supports `company_id`, `all_companies`, `campaign_id`, `direction`, `mine_only`, `limit`, `offset` |
 | GET | `/api/campaigns/{campaign_id}` | Get campaign |
 | POST | `/api/campaigns/{campaign_id}/status` | Update campaign status |
 | GET | `/api/campaigns/{campaign_id}/sequence` | Get sequence |
@@ -244,6 +258,10 @@ API token management is super-admin only:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/analytics/campaigns` | Cross-campaign rollups (`company_id`, `from_ts`, `to_ts`, `mine_only`) |
+| GET | `/api/analytics/clients` | Per-client rollups for operator view (`company_id`, `from_ts`, `to_ts`, `mine_only`) |
+| GET | `/api/analytics/reliability` | Webhook reliability rollups (`company_id`, `provider_slug`, `from_ts`, `to_ts`) |
+| GET | `/api/analytics/message-sync-health` | Campaign-level message reconciliation health (`company_id`, `campaign_id`, `message_sync_status`) |
+| GET | `/api/analytics/campaigns/{campaign_id}/sequence-steps` | Sequence step performance derived from reconciled/webhook message history (`from_ts`, `to_ts`) |
 
 ### Webhooks
 
@@ -259,10 +277,13 @@ API token management is super-admin only:
 Webhook signature:
 - if `smartlead_webhook_secret` is configured, send `X-Smartlead-Signature` (HMAC SHA-256 of raw body).
 - if `heyreach_webhook_secret` is configured, send `X-HeyReach-Signature` (HMAC SHA-256 of raw body).
+- all API responses include `X-Request-ID` for log correlation. Clients may pass `X-Request-ID` (or `X-Correlation-ID`) to preserve an upstream trace ID.
 
 Webhook replay:
 - requires super-admin bearer token
 - supported providers: `smartlead`, `heyreach`
+- incident recovery playbook: `docs/WEBHOOK_INCIDENT_RUNBOOK.md`
+- drill/operations playbook: `docs/WEBHOOK_RUNBOOK_DRILLS.md`
 
 ---
 

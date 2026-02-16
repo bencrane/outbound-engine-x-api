@@ -156,3 +156,354 @@ def test_campaigns_analytics_dashboard_respects_date_filter(monkeypatch):
     assert body[0]["outbound_messages_total"] == 1
 
     _clear()
+
+
+def test_clients_analytics_rollup_for_org_admin(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [
+                {
+                    "id": "cmp-1",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "name": "Campaign 1",
+                    "status": "ACTIVE",
+                    "created_by_user_id": "u-1",
+                    "created_at": _ts(-3),
+                    "updated_at": _ts(-1),
+                    "deleted_at": None,
+                },
+                {
+                    "id": "cmp-2",
+                    "org_id": "org-1",
+                    "company_id": "c-2",
+                    "name": "Campaign 2",
+                    "status": "PAUSED",
+                    "created_by_user_id": "u-2",
+                    "created_at": _ts(-4),
+                    "updated_at": _ts(-2),
+                    "deleted_at": None,
+                },
+            ],
+            "company_campaign_leads": [
+                {"org_id": "org-1", "company_campaign_id": "cmp-1", "status": "active", "updated_at": _ts(-2), "deleted_at": None},
+                {"org_id": "org-1", "company_campaign_id": "cmp-2", "status": "paused", "updated_at": _ts(-2), "deleted_at": None},
+                {"org_id": "org-1", "company_campaign_id": "cmp-2", "status": "active", "updated_at": _ts(-1), "deleted_at": None},
+            ],
+            "company_campaign_messages": [
+                {"org_id": "org-1", "company_campaign_id": "cmp-1", "direction": "outbound", "sent_at": _ts(-2), "updated_at": _ts(-2), "deleted_at": None},
+                {"org_id": "org-1", "company_campaign_id": "cmp-1", "direction": "inbound", "sent_at": _ts(-1), "updated_at": _ts(-1), "deleted_at": None},
+                {"org_id": "org-1", "company_campaign_id": "cmp-2", "direction": "outbound", "sent_at": _ts(-1), "updated_at": _ts(-1), "deleted_at": None},
+            ],
+            "webhook_events": [],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="api_token"))
+
+    client = TestClient(app)
+    response = client.get("/api/analytics/clients")
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 2
+    c1 = next(row for row in rows if row["company_id"] == "c-1")
+    c2 = next(row for row in rows if row["company_id"] == "c-2")
+    assert c1["campaigns_total"] == 1
+    assert c1["leads_total"] == 1
+    assert c1["replies_total"] == 1
+    assert c2["campaigns_total"] == 1
+    assert c2["leads_total"] == 2
+    assert c2["outbound_messages_total"] == 1
+
+    _clear()
+
+
+def test_reliability_analytics_rollup(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+            "webhook_events": [
+                {
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_slug": "smartlead",
+                    "status": "processed",
+                    "replay_count": 0,
+                    "last_error": None,
+                    "created_at": _ts(-1),
+                },
+                {
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_slug": "smartlead",
+                    "status": "replayed",
+                    "replay_count": 2,
+                    "last_error": "transient timeout",
+                    "created_at": _ts(-1),
+                },
+                {
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_slug": "heyreach",
+                    "status": "replayed",
+                    "replay_count": 1,
+                    "last_error": None,
+                    "created_at": _ts(-1),
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="api_token"))
+
+    client = TestClient(app)
+    response = client.get("/api/analytics/reliability?company_id=c-1")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["events_total"] == 3
+    assert body["replayed_events_total"] == 2
+    assert body["replay_count_total"] == 3
+    assert body["errors_total"] == 1
+    assert len(body["by_provider"]) == 2
+    smartlead = next(item for item in body["by_provider"] if item["provider_slug"] == "smartlead")
+    assert smartlead["events_total"] == 2
+    assert smartlead["errors_total"] == 1
+
+    _clear()
+
+
+def test_message_sync_health_lists_campaign_sync_state(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [
+                {
+                    "id": "cmp-1",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "name": "Campaign 1",
+                    "status": "ACTIVE",
+                    "provider_id": "prov-smartlead",
+                    "message_sync_status": "success",
+                    "last_message_sync_at": _ts(-1),
+                    "last_message_sync_error": None,
+                    "updated_at": _ts(-1),
+                    "deleted_at": None,
+                },
+                {
+                    "id": "cmp-2",
+                    "org_id": "org-1",
+                    "company_id": "c-2",
+                    "name": "Campaign 2",
+                    "status": "ACTIVE",
+                    "provider_id": "prov-heyreach",
+                    "message_sync_status": "partial_error",
+                    "last_message_sync_at": _ts(-1),
+                    "last_message_sync_error": "lead messages fetch failed [transient]",
+                    "updated_at": _ts(-1),
+                    "deleted_at": None,
+                },
+            ],
+            "company_campaign_leads": [
+                {"id": "l-1", "org_id": "org-1", "company_campaign_id": "cmp-1", "deleted_at": None},
+                {"id": "l-2", "org_id": "org-1", "company_campaign_id": "cmp-2", "deleted_at": None},
+            ],
+            "company_campaign_messages": [
+                {"id": "m-1", "org_id": "org-1", "company_campaign_id": "cmp-1", "direction": "inbound", "deleted_at": None},
+                {"id": "m-2", "org_id": "org-1", "company_campaign_id": "cmp-1", "direction": "outbound", "deleted_at": None},
+                {"id": "m-3", "org_id": "org-1", "company_campaign_id": "cmp-2", "direction": "outbound", "deleted_at": None},
+            ],
+            "webhook_events": [],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="api_token"))
+
+    client = TestClient(app)
+    response = client.get("/api/analytics/message-sync-health?message_sync_status=success")
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["campaign_id"] == "cmp-1"
+    assert rows[0]["messages_total"] == 2
+    assert rows[0]["inbound_total"] == 1
+    assert rows[0]["outbound_total"] == 1
+
+    _clear()
+
+
+def test_campaign_sequence_step_performance(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [
+                {
+                    "id": "cmp-1",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "name": "Campaign 1",
+                    "status": "ACTIVE",
+                    "created_by_user_id": "u-1",
+                    "created_at": _ts(-10),
+                    "updated_at": _ts(-1),
+                    "deleted_at": None,
+                }
+            ],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [
+                # lead A: step 1 outbound then inbound
+                {
+                    "id": "m-1",
+                    "org_id": "org-1",
+                    "company_campaign_id": "cmp-1",
+                    "company_campaign_lead_id": "lead-a",
+                    "external_lead_id": "ext-a",
+                    "direction": "outbound",
+                    "sequence_step_number": 1,
+                    "sent_at": _ts(-3),
+                    "updated_at": _ts(-3),
+                    "deleted_at": None,
+                },
+                {
+                    "id": "m-2",
+                    "org_id": "org-1",
+                    "company_campaign_id": "cmp-1",
+                    "company_campaign_lead_id": "lead-a",
+                    "external_lead_id": "ext-a",
+                    "direction": "inbound",
+                    "sequence_step_number": None,
+                    "sent_at": _ts(-2),
+                    "updated_at": _ts(-2),
+                    "deleted_at": None,
+                },
+                # lead B: step 1 outbound then step 2 outbound then inbound
+                {
+                    "id": "m-3",
+                    "org_id": "org-1",
+                    "company_campaign_id": "cmp-1",
+                    "company_campaign_lead_id": "lead-b",
+                    "external_lead_id": "ext-b",
+                    "direction": "outbound",
+                    "sequence_step_number": 1,
+                    "sent_at": _ts(-5),
+                    "updated_at": _ts(-5),
+                    "deleted_at": None,
+                },
+                {
+                    "id": "m-4",
+                    "org_id": "org-1",
+                    "company_campaign_id": "cmp-1",
+                    "company_campaign_lead_id": "lead-b",
+                    "external_lead_id": "ext-b",
+                    "direction": "outbound",
+                    "sequence_step_number": 2,
+                    "sent_at": _ts(-4),
+                    "updated_at": _ts(-4),
+                    "deleted_at": None,
+                },
+                {
+                    "id": "m-5",
+                    "org_id": "org-1",
+                    "company_campaign_id": "cmp-1",
+                    "company_campaign_lead_id": "lead-b",
+                    "external_lead_id": "ext-b",
+                    "direction": "inbound",
+                    "sequence_step_number": None,
+                    "sent_at": _ts(-1),
+                    "updated_at": _ts(-1),
+                    "deleted_at": None,
+                },
+            ],
+            "webhook_events": [],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="api_token"))
+
+    client = TestClient(app)
+    response = client.get("/api/analytics/campaigns/cmp-1/sequence-steps")
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 2
+    step1 = next(row for row in rows if row["sequence_step_number"] == 1)
+    step2 = next(row for row in rows if row["sequence_step_number"] == 2)
+    assert step1["outbound_messages_total"] == 2
+    assert step1["replies_total"] == 1
+    assert step1["reply_rate"] == 50.0
+    assert step2["outbound_messages_total"] == 1
+    assert step2["replies_total"] == 1
+    assert step2["reply_rate"] == 100.0
+
+    _clear()
+
+
+def test_org_level_non_admin_cannot_access_org_wide_analytics(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+            "webhook_events": [],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-2", role="user", company_id=None, auth_method="api_token"))
+
+    client = TestClient(app)
+    response = client.get("/api/analytics/campaigns")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Admin role required"
+
+    _clear()
+
+
+def test_company_scoped_user_cannot_query_different_company_analytics(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+            "webhook_events": [],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/analytics/reliability?company_id=c-2")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Company not found"
+
+    _clear()
+
+
+def test_company_scoped_user_cannot_access_other_company_sequence_step_analytics(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [
+                {
+                    "id": "cmp-2",
+                    "org_id": "org-1",
+                    "company_id": "c-2",
+                    "name": "Other Company Campaign",
+                    "status": "ACTIVE",
+                    "created_by_user_id": "u-9",
+                    "created_at": _ts(-2),
+                    "updated_at": _ts(-1),
+                    "deleted_at": None,
+                }
+            ],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+            "webhook_events": [],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/analytics/campaigns/cmp-2/sequence-steps")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Campaign not found"
+
+    _clear()

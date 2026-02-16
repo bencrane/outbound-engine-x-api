@@ -113,6 +113,7 @@ def _base_tables():
         }],
         "organizations": [{"id": "org-1", "deleted_at": None, "provider_configs": {"smartlead": {"api_key": "sl-key"}}}],
         "company_campaigns": [],
+        "company_campaign_messages": [],
         "company_campaign_sequences": [],
     }
 
@@ -600,4 +601,219 @@ def test_campaign_analytics_provider(monkeypatch):
     assert body["normalized"]["sent"] == 10
     assert body["normalized"]["replied"] == 2
 
+    _clear()
+
+
+def test_create_campaign_maps_transient_provider_errors_to_503(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+
+    def _raise_transient(**kwargs):
+        raise campaigns_router.SmartleadProviderError("Smartlead API returned HTTP 503: upstream unavailable")
+
+    monkeypatch.setattr(campaigns_router, "smartlead_create_campaign", _raise_transient)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/campaigns/", json={"name": "Campaign transient"})
+    assert response.status_code == 503
+    assert "transient" in response.json()["detail"]
+    _clear()
+
+
+def test_campaign_org_level_non_admin_cannot_create(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-2", role="user", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/campaigns/", json={"name": "Denied", "company_id": "c-1"})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Admin role required"
+    _clear()
+
+
+def test_campaign_org_admin_requires_company_id_for_list(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/")
+    assert response.status_code == 400
+    assert "company_id is required" in response.json()["detail"]
+    _clear()
+
+
+def test_campaign_org_admin_can_list_all_companies(monkeypatch):
+    tables = _base_tables()
+    tables["companies"].append({"id": "c-2", "org_id": "org-1", "deleted_at": None})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "101",
+            "name": "C1 Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+        {
+            "id": "cmp-2",
+            "org_id": "org-1",
+            "company_id": "c-2",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "102",
+            "name": "C2 Campaign",
+            "status": "PAUSED",
+            "created_by_user_id": "u-2",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/?all_companies=true")
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 2
+    assert {row["company_id"] for row in rows} == {"c-1", "c-2"}
+    _clear()
+
+
+def test_campaign_company_scoped_user_cannot_use_all_companies(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/?all_companies=true")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "All-companies view is admin only"
+    _clear()
+
+
+def test_campaign_company_user_cannot_target_different_company(monkeypatch):
+    tables = _base_tables()
+    tables["companies"].append({"id": "c-2", "org_id": "org-1", "deleted_at": None})
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/campaigns/", json={"name": "Blocked", "company_id": "c-2"})
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Company not found"
+    _clear()
+
+
+def test_campaign_company_user_cannot_access_other_company_campaign(monkeypatch):
+    tables = _base_tables()
+    tables["companies"].append({"id": "c-2", "org_id": "org-1", "deleted_at": None})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-2",
+            "org_id": "org-1",
+            "company_id": "c-2",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "999",
+            "name": "Other Company Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-9",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-2")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Campaign not found"
+    _clear()
+
+
+def test_campaign_messages_feed_org_admin_all_companies(monkeypatch):
+    tables = _base_tables()
+    tables["companies"].append({"id": "c-2", "org_id": "org-1", "deleted_at": None})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "11",
+            "name": "Campaign 1",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+        {
+            "id": "cmp-2",
+            "org_id": "org-1",
+            "company_id": "c-2",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "12",
+            "name": "Campaign 2",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-2",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+    ]
+    tables["company_campaign_messages"] = [
+        {
+            "id": "m-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "company_campaign_id": "cmp-1",
+            "company_campaign_lead_id": None,
+            "external_message_id": "em-1",
+            "direction": "inbound",
+            "subject": "Reply 1",
+            "body": "Body 1",
+            "sent_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+        {
+            "id": "m-2",
+            "org_id": "org-1",
+            "company_id": "c-2",
+            "company_campaign_id": "cmp-2",
+            "company_campaign_lead_id": None,
+            "external_message_id": "em-2",
+            "direction": "outbound",
+            "subject": "Outbound 2",
+            "body": "Body 2",
+            "sent_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/messages?all_companies=true&direction=inbound")
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["company_id"] == "c-1"
+    assert rows[0]["direction"] == "inbound"
     _clear()

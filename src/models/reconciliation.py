@@ -13,6 +13,8 @@ class ReconciliationRunRequest(BaseModel):
     dry_run: bool = True
     campaign_limit: int = Field(default=100, ge=1, le=1000)
     lead_limit: int = Field(default=500, ge=1, le=2000)
+    sync_messages: bool = True
+    message_limit: int = Field(default=1000, ge=1, le=5000)
 
 
 class ReconciliationProviderStats(BaseModel):
@@ -24,6 +26,9 @@ class ReconciliationProviderStats(BaseModel):
     leads_scanned: int
     leads_created: int
     leads_updated: int
+    messages_scanned: int
+    messages_created: int
+    messages_updated: int
     errors: list[str] = []
 
 

@@ -7,7 +7,9 @@ import bcrypt as bcrypt_lib
 from pydantic import BaseModel, EmailStr
 from typing import Literal
 from src.auth import SuperAdminContext, get_current_super_admin, create_super_admin_token
+from src.config import settings
 from src.db import supabase
+from src.observability import metrics_snapshot, persist_metrics_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +129,25 @@ class TokenCreateResponse(BaseModel):
 class ProviderConfigUpdate(BaseModel):
     provider_slug: str    # e.g., "smartlead", "heyreach"
     config: dict          # Provider-specific config (API keys, etc.)
+
+
+class MetricsSnapshotRecord(BaseModel):
+    id: str
+    source: str
+    request_id: str | None = None
+    counters: dict
+    created_at: datetime
+
+
+class MetricsSnapshotFlushRequest(BaseModel):
+    source: str = "super_admin_flush"
+    reset_after_persist: bool = False
+
+
+class MetricsSnapshotFlushResponse(BaseModel):
+    persisted: bool
+    source: str
+    counter_count: int
 
 
 def _ensure_org_exists(org_id: str) -> None:
@@ -491,3 +512,42 @@ async def list_providers(ctx: SuperAdminContext = Depends(get_current_super_admi
             created_at=p["created_at"],
         ))
     return providers
+
+
+@router.get("/observability/metrics-snapshots", response_model=list[MetricsSnapshotRecord])
+async def list_metrics_snapshots(
+    limit: int = 50,
+    offset: int = 0,
+    ctx: SuperAdminContext = Depends(get_current_super_admin),
+):
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(0, offset)
+    result = (
+        supabase.table("observability_metric_snapshots")
+        .select("id, source, request_id, counters, created_at")
+        .execute()
+    )
+    rows = result.data or []
+    rows = sorted(rows, key=lambda row: row.get("created_at") or "", reverse=True)
+    return rows[bounded_offset:bounded_offset + bounded_limit]
+
+
+@router.post("/observability/metrics-snapshots/flush", response_model=MetricsSnapshotFlushResponse)
+async def flush_metrics_snapshot(
+    data: MetricsSnapshotFlushRequest,
+    ctx: SuperAdminContext = Depends(get_current_super_admin),
+):
+    counter_count = len(metrics_snapshot())
+    persisted = persist_metrics_snapshot(
+        supabase_client=supabase,
+        source=data.source,
+        reset_after_persist=data.reset_after_persist,
+        export_url=settings.observability_export_url,
+        export_bearer_token=settings.observability_export_bearer_token,
+        export_timeout_seconds=settings.observability_export_timeout_seconds,
+    )
+    return MetricsSnapshotFlushResponse(
+        persisted=persisted,
+        source=data.source,
+        counter_count=counter_count,
+    )

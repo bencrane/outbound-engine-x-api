@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     smartlead_webhook_secret: str | None = None
     heyreach_webhook_secret: str | None = None
     internal_scheduler_secret: str | None = None
+    heyreach_message_sync_mode: str = "webhook_only"  # webhook_only | pull_best_effort
+    observability_export_url: str | None = None
+    observability_export_bearer_token: str | None = None
+    observability_export_timeout_seconds: float = 3.0
 
     class Config:
         env_file = ".env"
