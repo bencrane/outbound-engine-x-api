@@ -43,3 +43,74 @@ def test_delete_webhook_tolerates_delete_path_variant(monkeypatch):
         "https://x.example/api/webhook-url/123",
         "https://x.example/api/webhook-url/123/",
     ]
+
+
+def test_campaign_status_update_routes_active_to_resume_endpoint(monkeypatch):
+    calls: list[str] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append(kwargs["url"])
+        return _FakeResponse(200, {"data": {"id": 1, "status": "Queued"}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    result = emailbison_client.update_campaign_status(
+        api_key="k",
+        campaign_id="77",
+        status_value="ACTIVE",
+        instance_url="https://x.example",
+    )
+
+    assert result["status"] == "Queued"
+    assert calls == ["https://x.example/api/campaigns/77/resume"]
+
+
+def test_campaign_status_update_routes_paused_to_pause_endpoint(monkeypatch):
+    calls: list[str] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append(kwargs["url"])
+        return _FakeResponse(200, {"data": {"id": 1, "status": "Paused"}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    result = emailbison_client.update_campaign_status(
+        api_key="k",
+        campaign_id="77",
+        status_value="PAUSED",
+        instance_url="https://x.example",
+    )
+
+    assert result["status"] == "Paused"
+    assert calls == ["https://x.example/api/campaigns/77/pause"]
+
+
+def test_campaign_status_update_routes_stopped_to_archive_endpoint(monkeypatch):
+    calls: list[str] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append(kwargs["url"])
+        return _FakeResponse(200, {"data": {"id": 1, "status": "Archived"}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    result = emailbison_client.update_campaign_status(
+        api_key="k",
+        campaign_id="77",
+        status_value="STOPPED",
+        instance_url="https://x.example",
+    )
+
+    assert result["status"] == "Archived"
+    assert calls == ["https://x.example/api/campaigns/77/archive"]
+
+
+def test_campaign_status_update_rejects_unsupported_transition():
+    try:
+        emailbison_client.update_campaign_status(
+            api_key="k",
+            campaign_id="77",
+            status_value="DRAFTED",
+            instance_url="https://x.example",
+        )
+    except emailbison_client.EmailBisonProviderError as exc:
+        assert "Unsupported EmailBison campaign status transition requested" in str(exc)
+    else:
+        raise AssertionError("Expected EmailBisonProviderError for unsupported status")

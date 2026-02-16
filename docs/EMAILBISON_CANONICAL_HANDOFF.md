@@ -40,6 +40,9 @@ Confidence rubric:
   - `GET /api/campaigns`
   - `POST /api/campaigns`
   - `POST /api/campaigns/{campaign_id}/stats`
+  - `PATCH /api/campaigns/{campaign_id}/pause` (status write)
+  - `PATCH /api/campaigns/{campaign_id}/resume` (status write)
+  - `PATCH /api/campaigns/{campaign_id}/archive` (status write)
 - **Required params**
   - Create: `name` required, `type` optional (`outbound`/`reply_followup` in examples).
   - Stats summary: `start_date`, `end_date` required.
@@ -51,6 +54,7 @@ Confidence rubric:
 - **Known caveats/inconsistencies**
   - List spec models filter fields in a request body shape even though endpoint method is `GET`.
   - Status examples use mixed casing (`Active`, `Launching`) and enum strings include values like `pending deletion`.
+  - Live spec confirmation pass found action endpoints for status writes (`pause`/`resume`/`archive`) rather than a generic `PATCH /api/campaigns/{campaign_id}/status` contract.
 - **Confidence**: **High**
 
 ### Leads
@@ -215,7 +219,7 @@ Confidence rubric:
 Rationale: no architectural dead-end exists, but provider dispatch refactor, EmailBison webhook ingress/signature contract, and normalization mapping must be completed before reliable production rollout.
 
 Implementation gates:
-- Phase 2 gate: finalize EmailBison campaign status-write contract from live spec before broad write-path hardening.
+- Phase 2 gate: status-write contract confirmed from live spec (`PATCH pause/resume/archive`). Remaining write-path hardening should follow this contract.
 - Phase 3 gate: finalize inbound webhook signature contract from live spec before webhook verification code.
 
 ## 4) Prioritized Implementation Plan (Phase 1 / 2 / 3)

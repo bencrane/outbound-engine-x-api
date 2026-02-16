@@ -210,14 +210,25 @@ def update_campaign_status(
     instance_url: str | None = None,
     timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
-    payload = {"status": status_value}
+    normalized = str(status_value).strip().upper()
+    if normalized == "ACTIVE":
+        candidate_paths = [f"/api/campaigns/{campaign_id}/resume"]
+    elif normalized == "PAUSED":
+        candidate_paths = [f"/api/campaigns/{campaign_id}/pause"]
+    elif normalized in {"STOPPED", "COMPLETED"}:
+        candidate_paths = [f"/api/campaigns/{campaign_id}/archive"]
+    else:
+        raise EmailBisonProviderError(
+            f"Unsupported EmailBison campaign status transition requested: {status_value}"
+        )
+
     data = _request_json(
         method="PATCH",
-        candidate_paths=[f"/api/campaigns/{campaign_id}", f"/api/campaigns/{campaign_id}/status"],
+        candidate_paths=candidate_paths,
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
-        json_payload=payload,
+        json_payload=None,
     )
     if isinstance(data, dict):
         return data
