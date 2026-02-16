@@ -437,6 +437,54 @@ def test_replay_webhook_events_bulk(monkeypatch):
     _clear_overrides()
 
 
+def test_lob_replay_bulk_duplicate_keys_are_idempotent(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "providers": [{"id": "prov-lob", "slug": "lob"}],
+            "webhook_events": [
+                {
+                    "id": "evt-row-lob-1",
+                    "provider_slug": "lob",
+                    "event_key": "lob:evt-1",
+                    "event_type": "piece.in_transit",
+                    "replay_count": 0,
+                    "payload": {"resource_id": "psc_1", "body": {"resource": {"id": "psc_1", "object": "postcard"}}},
+                }
+            ],
+            "company_direct_mail_pieces": [
+                {
+                    "id": "piece-row-1",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_id": "prov-lob",
+                    "external_piece_id": "psc_1",
+                    "piece_type": "postcard",
+                    "status": "queued",
+                    "deleted_at": None,
+                    "updated_at": _ts(),
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_replay_batch_size", 10)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_replay_max_concurrent_workers", 4)
+    _set_super_admin()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/webhooks/replay-bulk",
+        json={"provider_slug": "lob", "event_keys": ["lob:evt-1", "lob:evt-1"]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["replayed"] == 1
+    evt = fake_db.tables["webhook_events"][0]
+    assert evt["replay_count"] == 1
+    assert any(item.get("error") == "duplicate_request_key_ignored" for item in body["results"])
+    _clear_overrides()
+
+
 def test_replay_webhook_events_by_query(monkeypatch):
     fake_db = FakeSupabase(
         {
@@ -553,6 +601,7 @@ def test_lob_webhook_happy_path_projects_piece_status(monkeypatch):
     payload = {
         "id": "evt_lob_1",
         "type": "postcard.delivered",
+        "version": "v1",
         "date_created": "2026-02-16T00:00:00Z",
         "body": {"resource": {"id": "psc_123", "object": "postcard", "metadata": {"job": "a"}}},
     }
@@ -637,6 +686,46 @@ def test_lob_webhook_malformed_payload_handled_non_crashing(monkeypatch):
     assert fake_db.tables["webhook_events"][0]["payload"]["malformed_json"] is True
 
 
+def test_lob_webhook_schema_invalid_dead_letters(monkeypatch):
+    fake_db = FakeSupabase({"providers": [{"id": "prov-lob", "slug": "lob"}], "webhook_events": [], "company_direct_mail_pieces": []})
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_secret", None)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_signature_mode", "permissive_audit")
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_schema_versions", "v1")
+    client = TestClient(app)
+
+    payload = {"id": "evt_schema_invalid", "type": "postcard.created", "date_created": "2026-02-16T00:00:00Z"}
+    response = client.post("/api/webhooks/lob", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "dead_letter_recorded"
+    assert body["dead_letter"]["reason"] == "schema_invalid"
+    assert fake_db.tables["webhook_events"][0]["payload"]["_schema_validation"]["status"] == "failed"
+
+
+def test_lob_webhook_unknown_version_dead_letters(monkeypatch):
+    fake_db = FakeSupabase({"providers": [{"id": "prov-lob", "slug": "lob"}], "webhook_events": [], "company_direct_mail_pieces": []})
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_secret", None)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_signature_mode", "permissive_audit")
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_schema_versions", "v1")
+    client = TestClient(app)
+
+    payload = {
+        "id": "evt_version_bad",
+        "type": "postcard.created",
+        "version": "v999",
+        "date_created": "2026-02-16T00:00:00Z",
+        "body": {"resource": {"id": "psc_100"}},
+    }
+    response = client.post("/api/webhooks/lob", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "dead_letter_recorded"
+    assert body["dead_letter"]["reason"] == "version_unsupported"
+    assert fake_db.tables["webhook_events"][0]["payload"]["_schema_validation"]["reason"] == "version_unsupported"
+
+
 def test_lob_replay_reprojects_piece_status(monkeypatch):
     fake_db = FakeSupabase(
         {
@@ -694,6 +783,7 @@ def test_lob_webhook_unprojectable_event_goes_dead_letter(monkeypatch):
     payload = {
         "id": "evt_lob_unprojectable",
         "type": "self_mailer.processed",
+        "date_created": "2026-02-16T00:00:00Z",
         "body": {"resource": {"id": "sfm_123", "object": "self_mailer"}},
     }
     response = client.post("/api/webhooks/lob", json=payload)
@@ -798,7 +888,12 @@ def test_lob_webhook_mode_switch_permissive_audit_does_not_reject(monkeypatch):
     monkeypatch.setattr(webhooks_router.settings, "lob_webhook_signature_tolerance_seconds", 300)
     client = TestClient(app)
 
-    payload = {"id": "evt_lob_permissive", "type": "postcard.created", "body": {"resource": {"id": "psc_123"}}}
+    payload = {
+        "id": "evt_lob_permissive",
+        "type": "postcard.created",
+        "date_created": "2026-02-16T00:00:00Z",
+        "body": {"resource": {"id": "psc_123"}},
+    }
     raw = json.dumps(payload, separators=(",", ":"))
     response = client.post(
         "/api/webhooks/lob",
@@ -898,6 +993,68 @@ def test_lob_replay_query_batches_with_sleep(monkeypatch):
     _clear_overrides()
 
 
+def test_lob_replay_backpressure_increases_sleep_on_transient_failures(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "providers": [{"id": "prov-lob", "slug": "lob"}],
+            "webhook_events": [
+                {
+                    "id": "evt-row-lob-a",
+                    "provider_slug": "lob",
+                    "event_key": "lob:evt-a",
+                    "event_type": "piece.in_transit",
+                    "replay_count": 0,
+                    "created_at": "2026-02-15T10:00:00+00:00",
+                    "payload": {"resource_id": "psc_fail_a", "body": {"resource": {"id": "psc_fail_a", "object": "postcard"}}},
+                },
+                {
+                    "id": "evt-row-lob-b",
+                    "provider_slug": "lob",
+                    "event_key": "lob:evt-b",
+                    "event_type": "piece.in_transit",
+                    "replay_count": 0,
+                    "created_at": "2026-02-15T10:01:00+00:00",
+                    "payload": {"resource_id": "psc_fail_b", "body": {"resource": {"id": "psc_fail_b", "object": "postcard"}}},
+                },
+                {
+                    "id": "evt-row-lob-c",
+                    "provider_slug": "lob",
+                    "event_key": "lob:evt-c",
+                    "event_type": "piece.in_transit",
+                    "replay_count": 0,
+                    "created_at": "2026-02-15T10:02:00+00:00",
+                    "payload": {"resource_id": "psc_fail_c", "body": {"resource": {"id": "psc_fail_c", "object": "postcard"}}},
+                },
+            ],
+            "company_direct_mail_pieces": [],
+        }
+    )
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_replay_batch_size", 1)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_replay_sleep_ms", 10)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_replay_max_sleep_ms", 40)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_replay_backoff_multiplier", 2.0)
+    monkeypatch.setattr(webhooks_router.settings, "lob_webhook_replay_max_concurrent_workers", 2)
+    sleeps: list[float] = []
+    monkeypatch.setattr(webhooks_router.time, "sleep", lambda value: sleeps.append(value))
+    monkeypatch.setattr(
+        webhooks_router,
+        "_upsert_direct_mail_piece_from_lob_event",
+        lambda **_: (_ for _ in ()).throw(Exception("timeout while projecting")),
+    )
+    _set_super_admin()
+    client = TestClient(app)
+
+    response = client.post("/api/webhooks/replay-query", json={"provider_slug": "lob", "limit": 3})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["replayed"] == 0
+    assert len(sleeps) == 2
+    assert sleeps[0] == 0.01
+    assert sleeps[1] == 0.02
+    _clear_overrides()
+
+
 def test_lob_replay_bulk_marks_replay_failed_item(monkeypatch):
     fake_db = FakeSupabase(
         {
@@ -925,4 +1082,143 @@ def test_lob_replay_bulk_marks_replay_failed_item(monkeypatch):
     assert body["replayed"] == 0
     assert body["results"][0]["status"] == "replay_failed"
     assert fake_db.tables["webhook_events"][0]["status"] == "dead_letter"
+    _clear_overrides()
+
+
+def test_lob_dead_letter_list_detail_and_replay(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "providers": [{"id": "prov-lob", "slug": "lob"}],
+            "webhook_events": [
+                {
+                    "id": "evt-row-1",
+                    "provider_slug": "lob",
+                    "event_key": "lob:dl-1",
+                    "event_type": "piece.failed",
+                    "status": "dead_letter",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "replay_count": 0,
+                    "last_error": "projection_unresolved",
+                    "created_at": "2026-02-15T10:00:00+00:00",
+                    "payload": {
+                        "resource_id": "psc_1",
+                        "_dead_letter": {"reason": "projection_unresolved", "retryable": False},
+                        "body": {"resource": {"id": "psc_1", "object": "postcard"}},
+                    },
+                }
+            ],
+            "company_direct_mail_pieces": [
+                {
+                    "id": "piece-row-1",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_id": "prov-lob",
+                    "external_piece_id": "psc_1",
+                    "piece_type": "postcard",
+                    "status": "queued",
+                    "deleted_at": None,
+                    "updated_at": _ts(),
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    _set_super_admin()
+    client = TestClient(app)
+
+    listed = client.get("/api/webhooks/dead-letters", params={"reason": "projection_unresolved", "replay_status": "pending"})
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 1
+    assert rows[0]["event_key"] == "lob:dl-1"
+    assert rows[0]["dead_letter_reason"] == "projection_unresolved"
+
+    detail = client.get("/api/webhooks/dead-letters/lob:dl-1")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "dead_letter"
+    assert detail.json()["dead_letter_retryable"] is False
+
+    replay = client.post("/api/webhooks/dead-letters/replay", json={"event_keys": ["lob:dl-1"]})
+    assert replay.status_code == 200
+    assert replay.json()["replayed"] == 1
+    assert fake_db.tables["webhook_events"][0]["status"] == "replayed"
+    assert fake_db.tables["webhook_events"][0]["replay_count"] == 1
+    _clear_overrides()
+
+
+def test_lob_dead_letter_list_filter_validation(monkeypatch):
+    fake_db = FakeSupabase({"webhook_events": []})
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    _set_super_admin()
+    client = TestClient(app)
+
+    invalid_status = client.get("/api/webhooks/dead-letters", params={"replay_status": "bad"})
+    assert invalid_status.status_code == 400
+    assert invalid_status.json()["detail"]["type"] == "invalid_filter"
+
+    invalid_range = client.get(
+        "/api/webhooks/dead-letters",
+        params={
+            "from_ts": "2026-02-20T00:00:00+00:00",
+            "to_ts": "2026-02-01T00:00:00+00:00",
+        },
+    )
+    assert invalid_range.status_code == 400
+    assert invalid_range.json()["detail"]["type"] == "invalid_filter"
+    _clear_overrides()
+
+
+def test_lob_dead_letter_list_pagination_and_org_filter(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "webhook_events": [
+                {
+                    "id": "evt1",
+                    "provider_slug": "lob",
+                    "event_key": "lob:1",
+                    "event_type": "piece.failed",
+                    "status": "dead_letter",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "replay_count": 0,
+                    "created_at": "2026-02-16T01:00:00+00:00",
+                    "payload": {"_dead_letter": {"reason": "schema_invalid", "retryable": False}},
+                },
+                {
+                    "id": "evt2",
+                    "provider_slug": "lob",
+                    "event_key": "lob:2",
+                    "event_type": "piece.failed",
+                    "status": "dead_letter",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "replay_count": 0,
+                    "created_at": "2026-02-16T02:00:00+00:00",
+                    "payload": {"_dead_letter": {"reason": "schema_invalid", "retryable": False}},
+                },
+                {
+                    "id": "evt3",
+                    "provider_slug": "lob",
+                    "event_key": "lob:3",
+                    "event_type": "piece.failed",
+                    "status": "dead_letter",
+                    "org_id": "org-2",
+                    "company_id": "c-2",
+                    "replay_count": 0,
+                    "created_at": "2026-02-16T03:00:00+00:00",
+                    "payload": {"_dead_letter": {"reason": "schema_invalid", "retryable": False}},
+                },
+            ]
+        }
+    )
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    _set_super_admin()
+    client = TestClient(app)
+
+    response = client.get("/api/webhooks/dead-letters", params={"org_id": "org-1", "limit": 1, "offset": 1})
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["org_id"] == "org-1"
     _clear_overrides()

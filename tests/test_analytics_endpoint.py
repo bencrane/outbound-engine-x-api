@@ -507,3 +507,171 @@ def test_company_scoped_user_cannot_access_other_company_sequence_step_analytics
     assert response.json()["detail"] == "Campaign not found"
 
     _clear()
+
+
+def test_direct_mail_analytics_happy_path(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+            "company_direct_mail_pieces": [
+                {
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "piece_type": "postcard",
+                    "status": "delivered",
+                    "created_at": _ts(-2),
+                    "updated_at": _ts(-1),
+                    "deleted_at": None,
+                },
+                {
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "piece_type": "letter",
+                    "status": "failed",
+                    "created_at": _ts(-1),
+                    "updated_at": _ts(-1),
+                    "deleted_at": None,
+                },
+            ],
+            "webhook_events": [
+                {
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_slug": "lob",
+                    "event_type": "piece.delivered",
+                    "status": "processed",
+                    "last_error": None,
+                    "payload": {"_ingestion": {"signature_reason": "verified"}},
+                    "created_at": _ts(-1),
+                },
+                {
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_slug": "lob",
+                    "event_type": "piece.failed",
+                    "status": "dead_letter",
+                    "last_error": "provider timeout",
+                    "payload": {"_dead_letter": {"reason": "projection_failure", "retryable": True}},
+                    "created_at": _ts(-1),
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="api_token"))
+
+    client = TestClient(app)
+    response = client.get("/api/analytics/direct-mail", params={"company_id": "c-1"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["org_id"] == "org-1"
+    assert body["company_id"] == "c-1"
+    assert body["total_pieces"] == 2
+    assert any(item["piece_type"] == "postcard" and item["status"] == "delivered" for item in body["volume_by_type_status"])
+    assert any(item["stage"] == "delivered" and item["count"] >= 1 for item in body["delivery_funnel"])
+    assert any(item["reason"] == "projection_failure" for item in body["failure_reason_breakdown"])
+    assert len(body["daily_trends"]) >= 1
+
+    _clear()
+
+
+def test_direct_mail_analytics_empty_dataset(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+            "company_direct_mail_pieces": [],
+            "webhook_events": [],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/analytics/direct-mail")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["company_id"] == "c-1"
+    assert body["total_pieces"] == 0
+    assert body["volume_by_type_status"] == []
+    assert body["failure_reason_breakdown"] == []
+
+    _clear()
+
+
+def test_direct_mail_analytics_invalid_filters(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+            "company_direct_mail_pieces": [],
+            "webhook_events": [],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="api_token"))
+
+    client = TestClient(app)
+    response = client.get(
+        "/api/analytics/direct-mail",
+        params={
+            "from_ts": "2026-02-02T00:00:00+00:00",
+            "to_ts": "2026-02-01T00:00:00+00:00",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["type"] == "invalid_filter"
+
+    conflict = client.get("/api/analytics/direct-mail", params={"all_companies": "true", "company_id": "c-1"})
+    assert conflict.status_code == 400
+    assert conflict.json()["detail"]["type"] == "invalid_filter"
+
+    _clear()
+
+
+def test_direct_mail_analytics_max_rows_and_pagination(monkeypatch):
+    piece_rows = [
+        {
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "piece_type": "postcard",
+            "status": "queued",
+            "created_at": _ts(-1),
+            "updated_at": _ts(-1),
+            "deleted_at": None,
+        },
+        {
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "piece_type": "letter",
+            "status": "delivered",
+            "created_at": _ts(-1),
+            "updated_at": _ts(-1),
+            "deleted_at": None,
+        },
+    ]
+    fake_db = FakeSupabase(
+        {
+            "company_campaigns": [],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+            "company_direct_mail_pieces": piece_rows,
+            "webhook_events": [],
+        }
+    )
+    monkeypatch.setattr(analytics_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="api_token"))
+    client = TestClient(app)
+
+    too_many = client.get("/api/analytics/direct-mail", params={"company_id": "c-1", "max_rows": 1})
+    assert too_many.status_code == 400
+    assert too_many.json()["detail"]["type"] == "invalid_filter"
+
+    paged = client.get("/api/analytics/direct-mail", params={"company_id": "c-1", "limit": 1, "offset": 1})
+    assert paged.status_code == 200
+    assert len(paged.json()["volume_by_type_status"]) == 1
+    _clear()

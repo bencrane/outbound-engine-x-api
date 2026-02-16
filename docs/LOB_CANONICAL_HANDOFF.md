@@ -17,6 +17,9 @@ Generated: `2026-02-16T03:33:25Z` (UTC)
 - Stage 4 (operator hardening + regression sweep + release closure) is implemented.
 - Lob v2 Stage 1 (webhook signature verification closure with mode switch) is implemented.
 - Lob v2 Stage 2 (self-mailers + checks capability expansion) is implemented.
+- Lob v2 Stage 3 (reliability controls: adaptive replay + dead-letter + observability hardening) is implemented.
+- Lob v2 Stage 4 (operator control plane + direct-mail analytics) is implemented.
+- Lob v2 Stage 5 (production reliability tightening: schema/version guard + replay concurrency/backpressure + index/SLO hardening) is implemented.
 
 ## 1) Lob Surface Mapped To Internal Capability Model
 
@@ -304,6 +307,47 @@ Stage 4 implementation status:
 - Added migration to expand direct-mail piece type constraint:
   - `migrations/017_direct_mail_piece_types_expand.sql`
 
+### Lob v2 Stage 4 - Operator control plane + direct-mail analytics (implemented)
+
+- Implemented Lob dead-letter operator APIs (super-admin):
+  - `GET /api/webhooks/dead-letters`
+  - `GET /api/webhooks/dead-letters/{event_key}`
+  - `POST /api/webhooks/dead-letters/replay`
+- Added dead-letter filters and guards:
+  - date range, reason, replay status, org_id
+  - deterministic invalid-filter/range errors
+  - pagination/limit bounds and max-window guard
+- Added capability-facing direct-mail analytics endpoint:
+  - `GET /api/analytics/direct-mail`
+  - normalized outputs for piece volume by type/status, delivery funnel, failure/rejection reasons, and daily trend buckets
+  - supports optional `company_id` and org-admin `all_companies=true`
+- Added durable observability snapshot persistence for Lob operational metric flows:
+  - webhook accepted/rejected/signature failure/duplicate/projection/replay/dead-letter paths
+  - direct-mail analytics snapshot source
+
+### Lob v2 Stage 5 - Production reliability tightening (implemented)
+
+- Implemented strict Lob webhook schema validation before projection:
+  - required identity/type/timestamp/resource references
+  - deterministic dead-letter reasons:
+    - `schema_invalid`
+    - `version_unsupported`
+- Added explicit payload version handling with configurable accepted set:
+  - `LOB_WEBHOOK_SCHEMA_VERSIONS`
+- Added replay worker/concurrency + queue controls for Lob replay paths:
+  - `LOB_WEBHOOK_REPLAY_MAX_CONCURRENT_WORKERS`
+  - `LOB_WEBHOOK_REPLAY_QUEUE_SIZE`
+  - preserved hard caps and idempotent replay behavior
+- Added adaptive backpressure tuning under transient replay failures with bounded max sleep.
+- Added DB/index hardening migration for dead-letter list filters and direct-mail analytics range scans:
+  - `migrations/018_lob_reliability_indexes.sql`
+- Added SLO threshold config hooks wired to metrics pipeline:
+  - `LOB_SLO_SIGNATURE_REJECT_RATE_THRESHOLD`
+  - `LOB_SLO_DEAD_LETTER_RATE_THRESHOLD`
+  - `LOB_SLO_REPLAY_FAILURE_RATE_THRESHOLD`
+  - `LOB_SLO_PROJECTION_FAILURE_RATE_THRESHOLD`
+  - `LOB_SLO_DUPLICATE_IGNORE_RATE_THRESHOLD`
+
 ## 11) Operator Runbook
 
 - Primary runbook: `docs/LOB_OPERATOR_RUNBOOK.md`
@@ -311,6 +355,8 @@ Stage 4 implementation status:
   - direct-mail incident triage,
   - webhook backlog/duplicate diagnostics,
   - replay escalation flow (single -> bulk -> query),
+  - dead-letter operator API triage and replay workflows,
+  - direct-mail analytics interpretation guidance,
   - expected status states and failure modes,
   - signature verification operations (permissive vs enforce) and failure handling.
 

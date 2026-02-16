@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,11 +10,18 @@ from src.db import supabase
 from src.models.analytics import (
     CampaignAnalyticsDashboardItem,
     ClientAnalyticsRollupItem,
+    DirectMailAnalyticsResponse,
+    DirectMailDailyTrendItem,
     MessageSyncHealthItem,
+    DirectMailFunnelItem,
+    DirectMailReasonBreakdownItem,
+    DirectMailVolumeByTypeStatusItem,
     ReliabilityAnalyticsResponse,
     ReliabilityByProviderItem,
     SequenceStepPerformanceItem,
 )
+from src.observability import persist_metrics_snapshot
+from src.config import settings
 
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
@@ -41,6 +48,18 @@ def _resolve_company_scope(auth: AuthContext, company_id: str | None) -> str | N
     if auth.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
     return company_id
+
+
+def _persist_analytics_snapshot(source: str) -> None:
+    persist_metrics_snapshot(
+        supabase_client=supabase,
+        source=source,
+        request_id=None,
+        reset_after_persist=False,
+        export_url=settings.observability_export_url,
+        export_bearer_token=settings.observability_export_bearer_token,
+        export_timeout_seconds=settings.observability_export_timeout_seconds,
+    )
 
 
 def _get_campaign_for_auth(auth: AuthContext, campaign_id: str) -> dict[str, Any]:
@@ -458,3 +477,185 @@ async def get_campaign_sequence_step_performance(
             )
         )
     return items
+
+
+@router.get("/direct-mail", response_model=DirectMailAnalyticsResponse)
+async def get_direct_mail_analytics(
+    company_id: str | None = Query(None),
+    all_companies: bool = Query(False),
+    from_ts: datetime | None = Query(None),
+    to_ts: datetime | None = Query(None),
+    limit: int = Query(50),
+    offset: int = Query(0),
+    max_rows: int = Query(10000),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    if from_ts and to_ts and from_ts > to_ts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"type": "invalid_filter", "message": "from_ts must be before or equal to to_ts"},
+        )
+    now = datetime.now(timezone.utc)
+    effective_to = to_ts or now
+    effective_from = from_ts or (effective_to - timedelta(days=30))
+    if (effective_to - effective_from).days > 93:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"type": "invalid_filter", "message": "date range exceeds 93 days"},
+        )
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(0, offset)
+    bounded_max_rows = max(1, min(max_rows, 20000))
+
+    if auth.company_id:
+        if company_id and company_id != auth.company_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+        resolved_company_id = auth.company_id
+        resolved_all_companies = False
+    else:
+        if auth.role != "admin":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+        if all_companies and company_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"type": "invalid_filter", "message": "company_id cannot be combined with all_companies=true"},
+            )
+        resolved_all_companies = all_companies
+        resolved_company_id = None if all_companies else company_id
+
+    pieces_query = supabase.table("company_direct_mail_pieces").select(
+        "piece_type, status, created_at, updated_at, company_id"
+    ).eq("org_id", auth.org_id).is_("deleted_at", "null")
+    if resolved_company_id:
+        pieces_query = pieces_query.eq("company_id", resolved_company_id)
+    piece_rows = pieces_query.execute().data or []
+    if len(piece_rows) > bounded_max_rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"type": "invalid_filter", "message": f"piece row count exceeds max_rows ({bounded_max_rows})"},
+        )
+
+    events_query = supabase.table("webhook_events").select(
+        "event_type, status, last_error, created_at, company_id, payload"
+    ).eq("provider_slug", "lob").eq("org_id", auth.org_id)
+    if resolved_company_id:
+        events_query = events_query.eq("company_id", resolved_company_id)
+    event_rows = events_query.execute().data or []
+    if len(event_rows) > bounded_max_rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"type": "invalid_filter", "message": f"event row count exceeds max_rows ({bounded_max_rows})"},
+        )
+
+    def _in_window(ts_value: Any) -> bool:
+        ts = _parse_datetime(ts_value)
+        if not ts:
+            return False
+        return effective_from <= ts <= effective_to
+
+    piece_rows = [row for row in piece_rows if _in_window(row.get("created_at")) or _in_window(row.get("updated_at"))]
+    event_rows = [row for row in event_rows if _in_window(row.get("created_at"))]
+
+    volume_counts: dict[tuple[str, str], int] = {}
+    for row in piece_rows:
+        piece_type = str(row.get("piece_type") or "unknown")
+        status_value = str(row.get("status") or "unknown")
+        volume_counts[(piece_type, status_value)] = volume_counts.get((piece_type, status_value), 0) + 1
+    volume_items = [
+        DirectMailVolumeByTypeStatusItem(piece_type=k[0], status=k[1], count=v)
+        for k, v in sorted(volume_counts.items(), key=lambda item: (item[0][0], item[0][1]))
+    ]
+
+    status_counts: dict[str, int] = {}
+    for row in piece_rows:
+        status_value = str(row.get("status") or "unknown")
+        status_counts[status_value] = status_counts.get(status_value, 0) + 1
+    delivery_funnel = [
+        DirectMailFunnelItem(stage="created", count=status_counts.get("queued", 0) + status_counts.get("processing", 0)),
+        DirectMailFunnelItem(stage="processed", count=status_counts.get("ready_for_mail", 0)),
+        DirectMailFunnelItem(stage="in_transit", count=status_counts.get("in_transit", 0)),
+        DirectMailFunnelItem(stage="delivered", count=status_counts.get("delivered", 0)),
+        DirectMailFunnelItem(stage="returned", count=status_counts.get("returned", 0)),
+        DirectMailFunnelItem(stage="failed", count=status_counts.get("failed", 0)),
+    ]
+
+    failure_reasons: dict[str, int] = {}
+    for row in event_rows:
+        payload = row.get("payload") or {}
+        dead_letter = payload.get("_dead_letter") if isinstance(payload, dict) else None
+        reason = None
+        if isinstance(dead_letter, dict):
+            reason = dead_letter.get("reason")
+        if not reason:
+            ingestion = payload.get("_ingestion") if isinstance(payload, dict) else None
+            if isinstance(ingestion, dict):
+                signature_reason = ingestion.get("signature_reason")
+                if signature_reason and signature_reason not in {"verified", "not_verified"}:
+                    reason = f"signature:{signature_reason}"
+        if not reason and row.get("last_error"):
+            reason = "provider_error"
+        if reason:
+            failure_reasons[str(reason)] = failure_reasons.get(str(reason), 0) + 1
+    reason_items = [
+        DirectMailReasonBreakdownItem(reason=key, count=value)
+        for key, value in sorted(failure_reasons.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    reason_items = reason_items[bounded_offset:bounded_offset + bounded_limit]
+
+    bucket_map: dict[str, dict[str, int]] = {}
+    day_cursor = effective_from.date()
+    end_day = effective_to.date()
+    while day_cursor <= end_day:
+        bucket_map[day_cursor.isoformat()] = {
+            "created": 0,
+            "processed": 0,
+            "in_transit": 0,
+            "delivered": 0,
+            "returned": 0,
+            "failed": 0,
+        }
+        day_cursor += timedelta(days=1)
+    for row in piece_rows:
+        created = _parse_datetime(row.get("created_at"))
+        if created:
+            day = created.date().isoformat()
+            if day in bucket_map:
+                bucket_map[day]["created"] += 1
+    event_to_stage = {
+        "piece.processed": "processed",
+        "piece.in_transit": "in_transit",
+        "piece.delivered": "delivered",
+        "piece.returned": "returned",
+        "piece.failed": "failed",
+    }
+    for row in event_rows:
+        created = _parse_datetime(row.get("created_at"))
+        if not created:
+            continue
+        day = created.date().isoformat()
+        if day not in bucket_map:
+            continue
+        stage = event_to_stage.get(str(row.get("event_type") or ""))
+        if stage:
+            bucket_map[day][stage] += 1
+    trend_items = [
+        DirectMailDailyTrendItem(day=day, **counts)
+        for day, counts in sorted(bucket_map.items())
+    ]
+    trend_items = trend_items[bounded_offset:bounded_offset + bounded_limit]
+    volume_items = volume_items[bounded_offset:bounded_offset + bounded_limit]
+
+    _persist_analytics_snapshot(source="direct_mail_analytics")
+    return DirectMailAnalyticsResponse(
+        org_id=auth.org_id,
+        company_id=resolved_company_id,
+        all_companies=resolved_all_companies,
+        from_ts=effective_from,
+        to_ts=effective_to,
+        total_pieces=len(piece_rows),
+        volume_by_type_status=volume_items,
+        delivery_funnel=delivery_funnel,
+        failure_reason_breakdown=reason_items,
+        daily_trends=trend_items,
+        updated_at=now,
+    )

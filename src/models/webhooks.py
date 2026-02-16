@@ -63,3 +63,46 @@ class WebhookReplayQueryResponse(BaseModel):
     matched: int
     replayed: int
     results: list[WebhookReplayBulkItem]
+
+
+class WebhookDeadLetterListItem(BaseModel):
+    provider_slug: Literal["lob"]
+    event_key: str
+    event_type: str | None = None
+    status: Literal["dead_letter", "replayed", "processed", "failed"] | None = None
+    org_id: str | None = None
+    company_id: str | None = None
+    dead_letter_reason: str | None = None
+    dead_letter_retryable: bool | None = None
+    last_error: str | None = None
+    replay_count: int | None = None
+    created_at: datetime | None = None
+    processed_at: datetime | None = None
+
+
+class WebhookDeadLetterDetailResponse(BaseModel):
+    provider_slug: Literal["lob"]
+    event_key: str
+    event_type: str | None = None
+    status: str | None = None
+    org_id: str | None = None
+    company_id: str | None = None
+    dead_letter_reason: str | None = None
+    dead_letter_retryable: bool | None = None
+    replay_count: int | None = None
+    last_error: str | None = None
+    payload: dict
+    created_at: datetime | None = None
+    processed_at: datetime | None = None
+
+
+class WebhookDeadLetterReplayRequest(BaseModel):
+    event_keys: list[str] = Field(default_factory=list, max_length=200)
+
+
+class WebhookDeadLetterReplayResponse(BaseModel):
+    requested: int
+    replayed: int
+    not_found: int
+    failed: int
+    results: list[WebhookReplayBulkItem]

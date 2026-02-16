@@ -31,3 +31,10 @@ def test_webhook_replay_query_requires_super_admin_token():
         json={"provider_slug": "smartlead", "limit": 10},
     )
     assert response.status_code == 401
+
+
+def test_webhook_dead_letter_endpoints_require_super_admin_token():
+    client = TestClient(app)
+    assert client.get("/api/webhooks/dead-letters").status_code == 401
+    assert client.get("/api/webhooks/dead-letters/lob:evt-1").status_code == 401
+    assert client.post("/api/webhooks/dead-letters/replay", json={"event_keys": ["lob:evt-1"]}).status_code == 401

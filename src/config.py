@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     jwt_expiration_minutes: int = 60
     smartlead_webhook_secret: str | None = None
     heyreach_webhook_secret: str | None = None
+    emailbison_webhook_path_token: str | None = None
+    emailbison_webhook_allowed_origins: str = "app.emailbison.com,emailbison.com"
     internal_scheduler_secret: str | None = None
     heyreach_message_sync_mode: str = "webhook_only"  # webhook_only | pull_best_effort
     observability_export_url: str | None = None
@@ -24,6 +26,14 @@ class Settings(BaseSettings):
     lob_webhook_replay_max_sleep_ms: int = 1000
     lob_webhook_replay_backoff_multiplier: float = 2.0
     lob_webhook_replay_max_events_per_run: int = 500
+    lob_webhook_replay_max_concurrent_workers: int = 4
+    lob_webhook_replay_queue_size: int = 50
+    lob_webhook_schema_versions: str = "v1"
+    lob_slo_signature_reject_rate_threshold: float = 0.01
+    lob_slo_dead_letter_rate_threshold: float = 0.01
+    lob_slo_replay_failure_rate_threshold: float = 0.05
+    lob_slo_projection_failure_rate_threshold: float = 0.01
+    lob_slo_duplicate_ignore_rate_threshold: float = 0.2
 
     model_config = SettingsConfigDict(
         env_file=".env",

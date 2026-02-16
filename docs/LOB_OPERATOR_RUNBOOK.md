@@ -15,6 +15,8 @@ In-scope Lob v1 workflows:
 - Checks create/list/get/cancel
 - Webhook ingest (`POST /api/webhooks/lob`) with idempotent projection into `company_direct_mail_pieces`
 - Super-admin replay (`replay`, `replay-bulk`, `replay-query`)
+- Super-admin dead-letter control plane (`dead-letters` list/detail/replay)
+- Direct-mail analytics (`GET /api/analytics/direct-mail`)
 
 Out of scope for this runbook:
 
@@ -113,6 +115,12 @@ Common failure modes:
 
 Dead-letter events are stored in `webhook_events` with `status=dead_letter`, preserved payload, failure reason, and retryability metadata.
 
+Operator APIs:
+
+- `GET /api/webhooks/dead-letters` with filters (`from_ts`, `to_ts`, `reason`, `replay_status`, `org_id`, `limit`, `offset`)
+- `GET /api/webhooks/dead-letters/{event_key}`
+- `POST /api/webhooks/dead-letters/replay`
+
 Common dead-letter reasons:
 
 - `malformed_payload`
@@ -128,6 +136,32 @@ Recovery flow:
 5. Confirm status transitions to `replayed` and piece state is updated.
 
 If replay still fails, keep the event in dead-letter and escalate with logs/metrics attached.
+
+## Direct-Mail Analytics Interpretation
+
+Endpoint:
+
+- `GET /api/analytics/direct-mail`
+
+Scope controls:
+
+- `company_id` for company-specific view
+- `all_companies=true` for org-admin aggregate view
+- company-scoped users are always constrained to their own company
+
+Key outputs:
+
+- `volume_by_type_status`: piece inventory by `postcard|letter|self_mailer|check` and normalized status
+- `delivery_funnel`: aggregate stage counts (`created`, `processed`, `in_transit`, `delivered`, `returned`, `failed`)
+- `failure_reason_breakdown`: dead-letter reasons/signature rejection diagnostics/provider error rollups
+- `daily_trends`: day buckets for created and downstream lifecycle event progression
+
+Operational usage:
+
+1. Verify baseline volume and expected status distribution after deploy windows.
+2. Watch `failed` + `returned` growth in funnel and correlate with dead-letter reason mix.
+3. Use trend deltas to detect ingestion or projection lag before backlog forms.
+4. If anomaly appears, pivot immediately to dead-letter list/detail and replay by smallest safe batch.
 
 ## Signature Verification Operations
 
@@ -168,3 +202,101 @@ Rollback: switch mode back to `permissive_audit` if rejection spikes threaten de
 - **duplicate spike**: `webhook.duplicate_ignored / webhook.events.received > 10%` for 15m
 - **projection failure**: `webhook.projection.failure > 0` sustained for 5m
 - **replay health**: `webhook.replay_failed > 0` or replay backlog increasing for 15m
+
+## Stage 5 Drill Playbooks
+
+### 1) Invalid signature spike
+
+Trigger:
+
+- `webhook.events.rejected / webhook.events.received` exceeds configured threshold
+- spike in signature reasons (`missing_signature`, `missing_timestamp`, `invalid_timestamp`, `stale_timestamp`, `invalid_signature`)
+
+Steps:
+
+1. Confirm current signature mode (`permissive_audit` vs `enforce`).
+2. Inspect `_ingestion.signature_reason` distribution in Lob webhook payload envelopes.
+3. Verify sender headers and clock skew against `LOB_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS`.
+4. If production impact is high, temporarily move to `permissive_audit`, fix upstream, then re-enforce.
+
+Metric checkpoints:
+
+- reject rate drops below threshold for at least 30m
+- verified signatures trend recovers
+
+### 2) Dead-letter backlog growth
+
+Trigger:
+
+- sustained growth in `status=dead_letter`
+- dead-letter creation rate crosses threshold
+
+Steps:
+
+1. Query `GET /api/webhooks/dead-letters` filtered by `reason`, `org_id`, and recent window.
+2. Identify dominant reason (`schema_invalid`, `version_unsupported`, `projection_unresolved`, `projection_failure`).
+3. Apply fix (schema/version contract alignment, projection mapping, config correction).
+4. Replay smallest safe set first via `POST /api/webhooks/dead-letters/replay`.
+5. Scale replay gradually while monitoring failure rates.
+
+Metric checkpoints:
+
+- dead-letter creation rate normalizes
+- replay failure rate remains below threshold
+
+### 3) Replay failure storm
+
+Trigger:
+
+- `webhook.replay_failed / (webhook.replay_processed + webhook.replay_failed)` exceeds threshold
+
+Steps:
+
+1. Reduce concurrency and queue pressure:
+   - lower `LOB_WEBHOOK_REPLAY_MAX_CONCURRENT_WORKERS`
+   - lower `LOB_WEBHOOK_REPLAY_BATCH_SIZE`
+   - raise `LOB_WEBHOOK_REPLAY_SLEEP_MS`
+2. Confirm if failures are transient (`retryable=true`) vs terminal.
+3. For transient-heavy storms, keep adaptive backpressure enabled and re-run with narrower query slices.
+4. For terminal failures, stop broad replay and fix root cause before retry.
+
+Metric checkpoints:
+
+- replay failure rate below threshold
+- replay processed count climbs without dead-letter surge
+
+### 4) Schema/version mismatch burst
+
+Trigger:
+
+- sharp rise of dead-letter reasons `schema_invalid` or `version_unsupported`
+
+Steps:
+
+1. Sample failed envelopes from dead-letter detail endpoint.
+2. Validate required fields (`id`, `type`, timestamp, resource id).
+3. Confirm sender payload version against `LOB_WEBHOOK_SCHEMA_VERSIONS`.
+4. If legitimate new version is introduced, add it to accepted versions and deploy.
+5. Replay dead-letter backlog after validation gates are fixed.
+
+Metric checkpoints:
+
+- schema/version dead-letter reasons decay to baseline
+- ingest accepted rate recovers
+
+## Operator Decision Tree
+
+1. **What is failing first?**
+   - Signature rejects -> run invalid signature playbook.
+   - Dead-letter growth -> run dead-letter backlog playbook.
+   - Replay failures -> run replay storm playbook.
+   - Schema/version failures -> run schema/version mismatch playbook.
+2. **Is failure class transient or terminal?**
+   - transient -> throttle/backpressure and retry.
+   - terminal -> stop broad replay, fix contract/mapping/config first.
+3. **After fix, validate in order**
+   - single replay success
+   - bounded bulk replay success
+   - query replay success
+4. **Close incident only when checkpoints are stable**
+   - reject/dead-letter/replay-failure rates below thresholds for sustained window.

@@ -16,7 +16,7 @@ Purpose: strict proof of what Lob endpoints are implemented in this repo for `di
 - Contract status registry constant: `src/providers/lob/client.py` -> `LOB_CONTRACT_STATUS_REGISTRY`
 - Guard test: `tests/test_lob_client.py::test_registry_covers_all_public_client_methods`
 
-Stage 4/v2-2 note: Lob provider client foundation, direct-mail capability workflows (postcards/letters/self-mailers/checks), webhook ingestion/projection/replay, operator hardening, and webhook signature verification are implemented.
+Stage 5/v2-5 note: Lob provider client foundation, direct-mail capability workflows (postcards/letters/self-mailers/checks), webhook ingestion/projection/replay, operator hardening, signature verification, dead-letter control plane APIs, direct-mail analytics, and production reliability tightening controls are implemented.
 
 ## Registry Rows (Stage 0 Baseline)
 
@@ -94,6 +94,42 @@ Stage 4/v2-2 note: Lob provider client foundation, direct-mail capability workfl
 - `GET /api/direct-mail/checks/{piece_id}`
 - `POST /api/direct-mail/checks/{piece_id}/cancel`
 
+## Capability-Facing API (V2 Stage 4)
+
+- `GET /api/analytics/direct-mail`
+  - normalized direct-mail analytics rollup
+  - supports `company_id` and org-admin `all_companies=true`
+  - includes piece volume by type/status, delivery funnel, failure/rejection reasons, and daily trends
+
+## Super-Admin Control Plane API (V2 Stage 4)
+
+- `GET /api/webhooks/dead-letters`
+- `GET /api/webhooks/dead-letters/{event_key}`
+- `POST /api/webhooks/dead-letters/replay`
+
+Notes:
+- Dead-letter APIs are Lob-scoped and super-admin protected.
+- Existing replay endpoints remain compatible (`replay`, `replay-bulk`, `replay-query`).
+
+## Reliability Controls (V2 Stage 5)
+
+- Webhook strict schema validation + version guard on `POST /api/webhooks/lob`
+  - required identity/type/timestamp/resource checks
+  - unknown schema version deterministic dead-letter route (`version_unsupported`)
+  - schema validation failures deterministic dead-letter route (`schema_invalid`)
+- Replay worker controls on Lob replay paths:
+  - `LOB_WEBHOOK_REPLAY_MAX_CONCURRENT_WORKERS`
+  - `LOB_WEBHOOK_REPLAY_QUEUE_SIZE`
+  - bounded queue + adaptive backpressure under transient replay failures
+- SLO calibration hooks wired to metric pipeline:
+  - signature reject rate
+  - dead-letter creation rate
+  - replay failure rate
+  - projection failure rate
+  - duplicate ignore anomaly rate
+- Index hardening migration:
+  - `migrations/018_lob_reliability_indexes.sql`
+
 ## Webhook + Replay (Stage 3)
 
 - Inbound endpoint implemented:
@@ -117,6 +153,7 @@ Stage 4/v2-2 note: Lob provider client foundation, direct-mail capability workfl
 - Correlated request-id logging is wired where request context is available.
 - Operator runbook published:
   - `docs/LOB_OPERATOR_RUNBOOK.md`
+- Durable observability snapshots now include Lob webhook ingress/rejection/replay/dead-letter flows and direct-mail analytics source snapshots.
 
 ## Stage Alignment
 

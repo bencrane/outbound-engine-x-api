@@ -106,6 +106,7 @@ def _base_tables():
         "company_campaign_leads": [],
         "company_campaign_messages": [],
         "webhook_events": [],
+        "company_direct_mail_pieces": [],
     }
 
 
@@ -116,6 +117,7 @@ def test_analytics_endpoints_require_auth():
     assert client.get("/api/analytics/reliability").status_code == 401
     assert client.get("/api/analytics/message-sync-health").status_code == 401
     assert client.get("/api/analytics/campaigns/cmp-1/sequence-steps").status_code == 401
+    assert client.get("/api/analytics/direct-mail").status_code == 401
 
 
 def test_org_level_non_admin_blocked_from_analytics(monkeypatch):
@@ -129,6 +131,7 @@ def test_org_level_non_admin_blocked_from_analytics(monkeypatch):
     assert client.get("/api/analytics/reliability").status_code == 403
     assert client.get("/api/analytics/message-sync-health").status_code == 403
     assert client.get("/api/analytics/campaigns/cmp-1/sequence-steps").status_code == 403
+    assert client.get("/api/analytics/direct-mail?all_companies=true").status_code == 403
     _clear()
 
 
@@ -142,6 +145,7 @@ def test_company_user_cannot_target_different_company_filters(monkeypatch):
     assert client.get("/api/analytics/clients?company_id=c-2").status_code == 404
     assert client.get("/api/analytics/reliability?company_id=c-2").status_code == 404
     assert client.get("/api/analytics/message-sync-health?company_id=c-2").status_code == 404
+    assert client.get("/api/analytics/direct-mail?company_id=c-2").status_code == 404
     _clear()
 
 
@@ -168,4 +172,5 @@ def test_company_user_can_access_own_analytics(monkeypatch):
     assert client.get("/api/analytics/reliability").status_code == 200
     assert client.get("/api/analytics/message-sync-health").status_code == 200
     assert client.get("/api/analytics/campaigns/cmp-1/sequence-steps").status_code == 200
+    assert client.get("/api/analytics/direct-mail").status_code == 200
     _clear()

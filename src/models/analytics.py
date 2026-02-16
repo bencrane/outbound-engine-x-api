@@ -97,3 +97,43 @@ class SequenceStepPerformanceItem(BaseModel):
     reply_rate: float
     last_activity_at: datetime | None = None
     updated_at: datetime
+
+
+class DirectMailVolumeByTypeStatusItem(BaseModel):
+    piece_type: str
+    status: str
+    count: int
+
+
+class DirectMailFunnelItem(BaseModel):
+    stage: str
+    count: int
+
+
+class DirectMailReasonBreakdownItem(BaseModel):
+    reason: str
+    count: int
+
+
+class DirectMailDailyTrendItem(BaseModel):
+    day: str
+    created: int
+    processed: int
+    in_transit: int
+    delivered: int
+    returned: int
+    failed: int
+
+
+class DirectMailAnalyticsResponse(BaseModel):
+    org_id: str
+    company_id: str | None = None
+    all_companies: bool = False
+    from_ts: datetime
+    to_ts: datetime
+    total_pieces: int
+    volume_by_type_status: list[DirectMailVolumeByTypeStatusItem]
+    delivery_funnel: list[DirectMailFunnelItem]
+    failure_reason_breakdown: list[DirectMailReasonBreakdownItem]
+    daily_trends: list[DirectMailDailyTrendItem]
+    updated_at: datetime
