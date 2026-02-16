@@ -1,6 +1,6 @@
 # EmailBison Canonical Handoff
 
-Generated: `2026-02-16T01:58:28Z` (UTC)
+Generated: `2026-02-16T02:17:02Z` (UTC)
 
 ## Canonical Source + Naming Caveat
 
@@ -130,7 +130,12 @@ Confidence rubric:
 - **Known caveats/inconsistencies**
   - Event list includes many event types (delivery/reply/account/tag/warmup), but API spec lookup does not expose inbound signature verification mechanics for receiving webhooks on your side.
   - MCP discovery shows additional webhook helper tools (`get_webhook_event_types`, `get_sample_webhook_payload`, `send_test_webhook_event`) that should be queried during implementation hardening.
-  - TODO (Phase 3): inbound webhook signature contract is pending; confirm live spec details for signature header name, algorithm, and payload canonicalization before implementing verification.
+  - **Inbound webhook signature contract (live-source verification, current state):**
+    - `header name`: **not documented** in `user-emailbison` resources/spec.
+    - `algorithm`: **not documented** in `user-emailbison` resources/spec.
+    - `canonical payload rules`: **not documented** in `user-emailbison` resources/spec.
+    - `timestamp/replay expectations`: **not documented** in `user-emailbison` resources/spec.
+  - Verification evidence: direct live checks of `/api/webhook-url`, `/api/webhook-events/sample-payload`, `/api/webhook-events/test-event`, plus keyword scans (`webhook signature`, `X-Signature`, `webhook header`, `timestamp`, `replay attack`, `hmac`, `secret`) returned no webhook-signature contract details.
 - **Confidence**: **Medium**
 
 ### Analytics
@@ -220,7 +225,7 @@ Rationale: no architectural dead-end exists, but provider dispatch refactor, Ema
 
 Implementation gates:
 - Phase 2 gate: status-write contract confirmed from live spec (`PATCH pause/resume/archive`). Remaining write-path hardening should follow this contract.
-- Phase 3 gate: finalize inbound webhook signature contract from live spec before webhook verification code.
+- Phase 3 gate: inbound webhook signature contract is **not yet published in current live MCP/spec outputs**; lock verification code until header/algorithm/canonicalization/replay contract is confirmed via updated live sources or vendor support.
 
 ## 4) Prioritized Implementation Plan (Phase 1 / 2 / 3)
 
@@ -259,7 +264,7 @@ Implementation gates:
 
 ### Phase 3 - Webhooks + observability hardening
 
-1. Confirm live EmailBison webhook signature contract (header, algorithm, payload canonicalization) from current MCP/API spec.
+1. Confirm live EmailBison webhook signature contract (header, algorithm, payload canonicalization, replay/timestamp policy) from current MCP/API spec.
 2. Add `/api/webhooks/emailbison` ingestion route.
 3. Add signature verification implementation from canonical EmailBison webhook contract.
 4. Reuse existing dedupe/replay infrastructure in `src/routers/webhooks.py`.
