@@ -23,6 +23,9 @@ _EP_TAGS = "/api/tags"
 _EP_CUSTOM_VARIABLES = "/api/custom-variables"
 _EP_BLACKLISTED_EMAILS = "/api/blacklisted-emails"
 _EP_BLACKLISTED_DOMAINS = "/api/blacklisted-domains"
+_EP_WORKSPACE_STATS = "/api/workspaces/v1.1/stats"
+_EP_MASTER_INBOX_SETTINGS = "/api/workspaces/v1.1/master-inbox-settings"
+_EP_CAMPAIGN_EVENTS_STATS = "/api/campaign-events/stats"
 
 
 class EmailBisonProviderError(Exception):
@@ -1411,6 +1414,108 @@ def delete_blacklisted_domain(
     raise EmailBisonProviderError("Unexpected EmailBison delete blacklisted domain response type")
 
 
+def get_workspace_account_details(
+    api_key: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[_EP_USERS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison workspace account details response type")
+
+
+def get_workspace_stats(
+    api_key: str,
+    start_date: str,
+    end_date: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[_EP_WORKSPACE_STATS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        params={"start_date": start_date, "end_date": end_date},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison workspace stats response type")
+
+
+def get_workspace_master_inbox_settings(
+    api_key: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[_EP_MASTER_INBOX_SETTINGS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison master inbox settings response type")
+
+
+def update_workspace_master_inbox_settings(
+    api_key: str,
+    updates: dict[str, Any],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=[_EP_MASTER_INBOX_SETTINGS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=updates,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison update master inbox settings response type")
+
+
+def get_campaign_events_stats(
+    api_key: str,
+    start_date: str,
+    end_date: str,
+    sender_email_ids: list[int] | None = None,
+    campaign_ids: list[int] | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"start_date": start_date, "end_date": end_date}
+    if sender_email_ids is not None:
+        params["sender_email_ids"] = sender_email_ids
+    if campaign_ids is not None:
+        params["campaign_ids"] = campaign_ids
+    data = _request_json(
+        method="GET",
+        candidate_paths=[_EP_CAMPAIGN_EVENTS_STATS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        params=params,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison campaign events stats response shape")
+
+
 def webhook_resource_paths(webhook_id: int | str) -> dict[str, str]:
     """
     Build known webhook resource path variants from current spec outputs.
@@ -1592,5 +1697,26 @@ EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     "create_blacklisted_domain": [{"method": "POST", "path": _EP_BLACKLISTED_DOMAINS}],
     "bulk_create_blacklisted_domains": [{"method": "POST", "path": "/api/blacklisted-domains/bulk"}],
     "delete_blacklisted_domain": [{"method": "DELETE", "path": "/api/blacklisted-domains/{blacklisted_domain_id}"}],
+    "get_workspace_account_details": [{"method": "GET", "path": _EP_USERS}],
+    "get_workspace_stats": [{"method": "GET", "path": _EP_WORKSPACE_STATS}],
+    "get_workspace_master_inbox_settings": [{"method": "GET", "path": _EP_MASTER_INBOX_SETTINGS}],
+    "update_workspace_master_inbox_settings": [{"method": "PATCH", "path": _EP_MASTER_INBOX_SETTINGS}],
+    "get_campaign_events_stats": [{"method": "GET", "path": _EP_CAMPAIGN_EVENTS_STATS}],
     "delete_webhook": [{"method": "DELETE", "path": "/api/webhook-url/{id}"}],
+}
+
+
+EMAILBISON_CONTRACT_STATUS_REGISTRY: dict[str, dict[str, str]] = {
+    "custom_variables.update": {
+        "status": "blocked_contract_missing",
+        "evidence": "Live user-emailbison API spec output currently surfaces GET/POST /api/custom-variables only; no update endpoint found.",
+    },
+    "custom_variables.delete": {
+        "status": "blocked_contract_missing",
+        "evidence": "Live user-emailbison API spec output currently surfaces GET/POST /api/custom-variables only; no delete endpoint found.",
+    },
+    "tags.update": {
+        "status": "blocked_contract_missing",
+        "evidence": "Live user-emailbison API spec output currently surfaces GET/POST /api/tags, GET /api/tags/{id}, and DELETE /api/tags/{tag_id}; no update endpoint found.",
+    },
 }

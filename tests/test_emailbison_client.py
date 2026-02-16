@@ -502,6 +502,53 @@ def test_blacklist_endpoints(monkeypatch):
     assert calls[7] == ("DELETE", "https://x.example/api/blacklisted-domains/1", None)
 
 
+def test_workspace_account_settings_and_stats_endpoints(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        if kwargs["url"].endswith("/api/campaign-events/stats"):
+            return _FakeResponse(200, {"data": [{"label": "Sent", "dates": [["2026-02-16", 2]]}]})
+        return _FakeResponse(200, {"data": {"ok": True}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    emailbison_client.get_workspace_account_details(api_key="k", instance_url="https://x.example")
+    emailbison_client.get_workspace_stats(
+        api_key="k",
+        start_date="2026-02-01",
+        end_date="2026-02-16",
+        instance_url="https://x.example",
+    )
+    emailbison_client.get_workspace_master_inbox_settings(api_key="k", instance_url="https://x.example")
+    emailbison_client.update_workspace_master_inbox_settings(
+        api_key="k",
+        updates={"sync_all_emails": True},
+        instance_url="https://x.example",
+    )
+    emailbison_client.get_campaign_events_stats(
+        api_key="k",
+        start_date="2026-02-01",
+        end_date="2026-02-16",
+        campaign_ids=[1],
+        sender_email_ids=[2],
+        instance_url="https://x.example",
+    )
+
+    assert calls[0] == ("GET", "https://x.example/api/users", None)
+    assert calls[1] == ("GET", "https://x.example/api/workspaces/v1.1/stats", None)
+    assert calls[2] == ("GET", "https://x.example/api/workspaces/v1.1/master-inbox-settings", None)
+    assert calls[3] == ("PATCH", "https://x.example/api/workspaces/v1.1/master-inbox-settings", {"sync_all_emails": True})
+    assert calls[4] == ("GET", "https://x.example/api/campaign-events/stats", None)
+
+
+def test_contract_status_registry_for_blocked_contract_missing_gaps():
+    registry = emailbison_client.EMAILBISON_CONTRACT_STATUS_REGISTRY
+    assert registry["custom_variables.update"]["status"] == "blocked_contract_missing"
+    assert registry["custom_variables.delete"]["status"] == "blocked_contract_missing"
+    assert registry["tags.update"]["status"] == "blocked_contract_missing"
+    assert "live user-emailbison api spec output" in registry["custom_variables.update"]["evidence"].lower()
+
+
 def test_registry_covers_all_public_client_methods():
     excluded = {"webhook_resource_paths"}
     public_callables = {

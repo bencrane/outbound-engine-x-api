@@ -89,6 +89,25 @@ Notes:
 - `POST /api/blacklisted-domains/bulk` -> `bulk_create_blacklisted_domains()`
 - `DELETE /api/blacklisted-domains/{blacklisted_domain_id}` -> `delete_blacklisted_domain()`
 
+## Slice 6 Coverage (Workspaces + Settings + Analytics/Stats)
+
+- `GET /api/users` -> `get_workspace_account_details()`
+- `GET /api/workspaces/v1.1/stats` -> `get_workspace_stats()`
+- `GET /api/workspaces/v1.1/master-inbox-settings` -> `get_workspace_master_inbox_settings()`
+- `PATCH /api/workspaces/v1.1/master-inbox-settings` -> `update_workspace_master_inbox_settings()`
+- `GET /api/campaign-events/stats` -> `get_campaign_events_stats()`
+
+## Contract-Limited Gaps (Registry Status)
+
+Source of truth in code: `src/providers/emailbison/client.py` -> `EMAILBISON_CONTRACT_STATUS_REGISTRY`
+
+- `custom_variables.update` -> `blocked_contract_missing`
+  - Evidence: live `user-emailbison` spec output currently surfaces `GET|POST /api/custom-variables` only.
+- `custom_variables.delete` -> `blocked_contract_missing`
+  - Evidence: live `user-emailbison` spec output currently surfaces `GET|POST /api/custom-variables` only.
+- `tags.update` -> `blocked_contract_missing`
+  - Evidence: live `user-emailbison` spec output currently surfaces `GET|POST /api/tags`, `GET /api/tags/{id}`, `DELETE /api/tags/{tag_id}`; no update path surfaced.
+
 ## Guardrails
 
 - Phase 3 webhook signature verification remains blocked until `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16` is resolved.

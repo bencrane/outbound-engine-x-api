@@ -12,11 +12,14 @@ from src.models.email_outreach import (
     EmailOutreachBlocklistDomainsBulkCreateRequest,
     EmailOutreachBlocklistEmailCreateRequest,
     EmailOutreachBlocklistEmailsBulkCreateRequest,
+    EmailOutreachCampaignEventsStatsRequest,
     EmailOutreachCustomVariableCreateRequest,
     EmailOutreachTagAttachCampaignsRequest,
     EmailOutreachTagAttachInboxesRequest,
     EmailOutreachTagAttachLeadsRequest,
     EmailOutreachTagCreateRequest,
+    EmailOutreachWorkspaceMasterInboxSettingsUpdateRequest,
+    EmailOutreachWorkspaceStatsRequest,
 )
 from src.providers.emailbison.client import (
     EmailBisonProviderError,
@@ -32,7 +35,11 @@ from src.providers.emailbison.client import (
     delete_blacklisted_domain as emailbison_delete_blacklisted_domain,
     delete_blacklisted_email as emailbison_delete_blacklisted_email,
     delete_tag as emailbison_delete_tag,
+    get_campaign_events_stats as emailbison_get_campaign_events_stats,
     get_tag as emailbison_get_tag,
+    get_workspace_account_details as emailbison_get_workspace_account_details,
+    get_workspace_master_inbox_settings as emailbison_get_workspace_master_inbox_settings,
+    get_workspace_stats as emailbison_get_workspace_stats,
     list_blacklisted_domains as emailbison_list_blacklisted_domains,
     list_blacklisted_emails as emailbison_list_blacklisted_emails,
     list_custom_variables as emailbison_list_custom_variables,
@@ -40,6 +47,7 @@ from src.providers.emailbison.client import (
     remove_tags_from_campaigns as emailbison_remove_tags_from_campaigns,
     remove_tags_from_leads as emailbison_remove_tags_from_leads,
     remove_tags_from_sender_emails as emailbison_remove_tags_from_sender_emails,
+    update_workspace_master_inbox_settings as emailbison_update_workspace_master_inbox_settings,
 )
 
 
@@ -128,6 +136,110 @@ def _to_int(value: str, *, context: str) -> int:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{context} failed: non-numeric external identifier",
         )
+
+
+def _get_inboxes_for_auth(auth: AuthContext, inbox_ids: list[str]) -> list[dict[str, Any]]:
+    inboxes: list[dict[str, Any]] = []
+    for inbox_id in inbox_ids:
+        inboxes.append(_get_inbox_for_auth(auth, inbox_id))
+    return inboxes
+
+
+@router.get("/workspace/account")
+async def get_workspace_account(auth: AuthContext = Depends(get_current_auth)):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        account = emailbison_get_workspace_account_details(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("workspace_account_get", exc)
+    return {"provider": "email_outreach", "account": account}
+
+
+@router.post("/workspace/stats")
+async def get_workspace_stats(
+    data: EmailOutreachWorkspaceStatsRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        stats = emailbison_get_workspace_stats(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            start_date=data.start_date,
+            end_date=data.end_date,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("workspace_stats_get", exc)
+    return {"provider": "email_outreach", "stats": stats}
+
+
+@router.get("/workspace/master-inbox-settings")
+async def get_workspace_master_inbox_settings(auth: AuthContext = Depends(get_current_auth)):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        settings = emailbison_get_workspace_master_inbox_settings(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("workspace_master_inbox_settings_get", exc)
+    return {"provider": "email_outreach", "settings": settings}
+
+
+@router.patch("/workspace/master-inbox-settings")
+async def update_workspace_master_inbox_settings(
+    data: EmailOutreachWorkspaceMasterInboxSettingsUpdateRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    updates = data.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No settings fields provided")
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        settings = emailbison_update_workspace_master_inbox_settings(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            updates=updates,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("workspace_master_inbox_settings_update", exc)
+    return {"provider": "email_outreach", "settings": settings}
+
+
+@router.post("/workspace/campaign-events/stats")
+async def get_workspace_campaign_events_stats(
+    data: EmailOutreachCampaignEventsStatsRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    external_campaign_ids: list[int] | None = None
+    external_sender_ids: list[int] | None = None
+
+    if data.campaign_ids:
+        campaigns = [_get_campaign_for_auth(auth, campaign_id) for campaign_id in data.campaign_ids]
+        _ = [_require_emailbison_provider(campaign["provider_id"], "Campaign events stats") for campaign in campaigns]
+        external_campaign_ids = [_to_int(campaign["external_campaign_id"], context="Campaign events stats") for campaign in campaigns]
+
+    if data.inbox_ids:
+        inboxes = _get_inboxes_for_auth(auth, data.inbox_ids)
+        _ = [_require_emailbison_provider(inbox["provider_id"], "Campaign events stats") for inbox in inboxes]
+        external_sender_ids = [_to_int(inbox["external_account_id"], context="Campaign events stats") for inbox in inboxes]
+
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        stats = emailbison_get_campaign_events_stats(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            start_date=data.start_date,
+            end_date=data.end_date,
+            campaign_ids=external_campaign_ids,
+            sender_email_ids=external_sender_ids,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("workspace_campaign_events_stats_get", exc)
+    return {"provider": "email_outreach", "stats": stats}
 
 
 @router.get("/tags")

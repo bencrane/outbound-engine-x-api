@@ -214,3 +214,107 @@ def test_attach_and_remove_tags_for_inboxes_happy_path(monkeypatch):
     assert remove.status_code == 200
 
     _clear()
+
+
+def test_workspace_account_settings_and_stats_happy_paths(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+    monkeypatch.setattr(email_outreach_router, "emailbison_get_workspace_account_details", lambda **kwargs: {"id": 1})
+    monkeypatch.setattr(email_outreach_router, "emailbison_get_workspace_stats", lambda **kwargs: {"emails_sent": "10"})
+    monkeypatch.setattr(
+        email_outreach_router,
+        "emailbison_get_workspace_master_inbox_settings",
+        lambda **kwargs: {"sync_all_emails": True},
+    )
+    monkeypatch.setattr(
+        email_outreach_router,
+        "emailbison_update_workspace_master_inbox_settings",
+        lambda **kwargs: {"sync_all_emails": False},
+    )
+    monkeypatch.setattr(
+        email_outreach_router,
+        "emailbison_get_campaign_events_stats",
+        lambda **kwargs: [{"label": "Sent", "dates": [["2026-02-16", 2]]}],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+    client = TestClient(app)
+
+    assert client.get("/api/email-outreach/workspace/account").status_code == 200
+    assert client.post("/api/email-outreach/workspace/stats", json={"start_date": "2026-02-01", "end_date": "2026-02-16"}).status_code == 200
+    assert client.get("/api/email-outreach/workspace/master-inbox-settings").status_code == 200
+    assert client.patch("/api/email-outreach/workspace/master-inbox-settings", json={"sync_all_emails": False}).status_code == 200
+    events = client.post(
+        "/api/email-outreach/workspace/campaign-events/stats",
+        json={"start_date": "2026-02-01", "end_date": "2026-02-16", "campaign_ids": ["cmp-1"], "inbox_ids": ["inbox-1"]},
+    )
+    assert events.status_code == 200
+
+    _clear()
+
+
+def test_workspace_campaign_events_auth_boundary(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"][0]["company_id"] = "c-2"
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/email-outreach/workspace/campaign-events/stats",
+        json={"start_date": "2026-02-01", "end_date": "2026-02-16", "campaign_ids": ["cmp-1"]},
+    )
+    assert response.status_code == 404
+
+    _clear()
+
+
+def test_workspace_campaign_events_malformed_identifier_tolerance(monkeypatch):
+    tables = _base_tables()
+    tables["company_inboxes"][0]["external_account_id"] = "bad-id"
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/email-outreach/workspace/campaign-events/stats",
+        json={"start_date": "2026-02-01", "end_date": "2026-02-16", "inbox_ids": ["inbox-1"]},
+    )
+    assert response.status_code == 400
+    assert "non-numeric external identifier" in response.json()["detail"].lower()
+
+    _clear()
+
+
+def test_workspace_provider_error_shape_contracts(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+
+    def _raise_transient(**kwargs):
+        raise email_outreach_router.EmailBisonProviderError("EmailBison API returned HTTP 503: upstream unavailable")
+
+    def _raise_terminal(**kwargs):
+        raise email_outreach_router.EmailBisonProviderError("Invalid EmailBison API key")
+
+    monkeypatch.setattr(email_outreach_router, "emailbison_get_workspace_stats", _raise_transient)
+    monkeypatch.setattr(email_outreach_router, "emailbison_update_workspace_master_inbox_settings", _raise_terminal)
+
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+    client = TestClient(app)
+
+    transient = client.post("/api/email-outreach/workspace/stats", json={"start_date": "2026-02-01", "end_date": "2026-02-16"})
+    assert transient.status_code == 503
+    transient_detail = transient.json()["detail"]
+    assert transient_detail["type"] == "provider_error"
+    assert transient_detail["provider"] == "emailbison"
+    assert transient_detail["retryable"] is True
+
+    terminal = client.patch("/api/email-outreach/workspace/master-inbox-settings", json={"sync_all_emails": True})
+    assert terminal.status_code == 502
+    terminal_detail = terminal.json()["detail"]
+    assert terminal_detail["type"] == "provider_error"
+    assert terminal_detail["provider"] == "emailbison"
+    assert terminal_detail["retryable"] is False
+
+    _clear()

@@ -45,3 +45,21 @@ class EmailOutreachBlocklistDomainCreateRequest(BaseModel):
 
 class EmailOutreachBlocklistDomainsBulkCreateRequest(BaseModel):
     domains: list[str]
+
+
+class EmailOutreachWorkspaceStatsRequest(BaseModel):
+    start_date: str
+    end_date: str
+
+
+class EmailOutreachWorkspaceMasterInboxSettingsUpdateRequest(BaseModel):
+    sync_all_emails: bool | None = None
+    smart_warmup_filter: bool | None = None
+    auto_interested_categorization: bool | None = None
+
+
+class EmailOutreachCampaignEventsStatsRequest(BaseModel):
+    start_date: str
+    end_date: str
+    campaign_ids: list[str] | None = None
+    inbox_ids: list[str] | None = None

@@ -1,6 +1,6 @@
 # EmailBison Canonical Handoff
 
-Generated: `2026-02-16T04:05:00Z` (UTC)
+Generated: `2026-02-16T05:00:00Z` (UTC)
 
 ## Canonical Source + Naming Caveat
 
@@ -214,6 +214,7 @@ Confidence rubric:
   - `GET /api/users` (account + team/workspace context)
   - `GET /api/workspaces/v1.1/stats`
   - `GET/PATCH /api/workspaces/v1.1/master-inbox-settings`
+  - `GET /api/campaign-events/stats` (workspace event-series analytics)
   - MCP workspace controls (discovered): list/switch/create workspace, token creation, invitation flows.
 - **Required params**
   - Workspace stats require `start_date`, `end_date`.
@@ -223,6 +224,10 @@ Confidence rubric:
   - Inbox settings: `sync_all_emails`, `smart_warmup_filter`, `auto_interested_categorization`.
 - **Known caveats/inconsistencies**
   - Many workspace operations are available as extended tools but need endpoint-by-endpoint lookup before direct API calls.
+  - Contract-limited gaps currently tracked in registry statuses:
+    - `custom_variables.update` -> `blocked_contract_missing`
+    - `custom_variables.delete` -> `blocked_contract_missing`
+    - `tags.update` -> `blocked_contract_missing`
 - **Confidence**: **Medium**
 
 ## 3) Integration Readiness Assessment (Outbound Engine X)
@@ -286,6 +291,7 @@ Current rollout progress:
 - Slice 3 (Inbox/replies): in progress with reply detail/thread surface and campaign-reply contract routing.
 - Slice 4 (Sender emails + warmup + healthcheck): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/inboxes.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 - Slice 5 (Tags + variables + blocklists): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
+- Slice 6 (Workspaces + settings + analytics/stats): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 
 ### Phase 1 - Provider foundation + read paths
 
