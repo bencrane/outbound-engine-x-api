@@ -12,6 +12,10 @@ from src.domain.normalization import (
     normalize_lead_status,
     normalize_message_direction,
 )
+from src.domain.provider_errors import (
+    provider_error_detail,
+    provider_error_http_status,
+)
 from src.models.campaigns import (
     CampaignCreateRequest,
     CampaignResponse,
@@ -43,6 +47,17 @@ from src.providers.smartlead.client import (
     unsubscribe_campaign_lead as smartlead_unsubscribe_campaign_lead,
     update_campaign_status as smartlead_update_campaign_status,
 )
+from src.providers.emailbison.client import (
+    attach_leads_to_campaign as emailbison_attach_leads_to_campaign,
+    create_lead as emailbison_create_lead,
+    EmailBisonProviderError,
+    create_campaign as emailbison_create_campaign,
+    get_campaign_stats as emailbison_get_campaign_stats,
+    list_campaign_leads as emailbison_list_campaign_leads,
+    list_replies as emailbison_list_replies,
+    stop_future_emails_for_leads as emailbison_stop_future_emails_for_leads,
+    update_campaign_status as emailbison_update_campaign_status,
+)
 
 
 router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
@@ -53,11 +68,19 @@ def _now_iso() -> str:
 
 
 def _provider_error_status(exc: SmartleadProviderError) -> int:
-    return status.HTTP_503_SERVICE_UNAVAILABLE if exc.retryable else status.HTTP_502_BAD_GATEWAY
+    return provider_error_http_status(exc)
 
 
-def _provider_error_detail(prefix: str, exc: SmartleadProviderError) -> str:
-    return f"{prefix} [{exc.category}]: {exc}"
+def _provider_error_detail(operation: str, exc: SmartleadProviderError) -> dict[str, Any]:
+    return provider_error_detail(provider="smartlead", operation=operation, exc=exc)
+
+
+def _emailbison_provider_error_status(exc: EmailBisonProviderError) -> int:
+    return provider_error_http_status(exc)
+
+
+def _emailbison_provider_error_detail(operation: str, exc: EmailBisonProviderError) -> dict[str, Any]:
+    return provider_error_detail(provider="emailbison", operation=operation, exc=exc)
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -144,52 +167,56 @@ def _get_company(auth: AuthContext, company_id: str) -> dict[str, Any]:
     return result.data[0]
 
 
-def _get_smartlead_entitlement(org_id: str, company_id: str) -> dict[str, Any]:
+def _get_provider_by_id(provider_id: str) -> dict[str, Any]:
+    result = supabase.table("providers").select("id, slug, capability_id").eq("id", provider_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Provider not configured")
+    return result.data[0]
+
+
+def _get_email_outreach_entitlement(org_id: str, company_id: str) -> dict[str, Any]:
     capability = supabase.table("capabilities").select("id").eq("slug", "email_outreach").execute()
     if not capability.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Capability not configured")
     capability_id = capability.data[0]["id"]
 
-    provider = supabase.table("providers").select("id, slug").eq("slug", "smartlead").eq(
-        "capability_id", capability_id
-    ).execute()
-    if not provider.data:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Provider not configured")
-    provider_id = provider.data[0]["id"]
-
     entitlement = supabase.table("company_entitlements").select("*").eq(
         "org_id", org_id
-    ).eq("company_id", company_id).eq("capability_id", capability_id).execute()
+    ).eq("company_id", company_id).eq("capability_id", capability_id).is_("deleted_at", "null").execute()
     if not entitlement.data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email outreach entitlement not found for company",
         )
+    return entitlement.data[0]
 
-    row = entitlement.data[0]
-    if row["provider_id"] != provider_id:
+
+def _require_smartlead_email_entitlement(org_id: str, company_id: str) -> dict[str, Any]:
+    entitlement = _get_email_outreach_entitlement(org_id, company_id)
+    provider = _get_provider_by_id(entitlement["provider_id"])
+    if provider["slug"] != "smartlead":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Company email outreach provider is not Smartlead",
         )
-    return row
+    return entitlement
 
 
-def _get_org_smartlead_api_key(org_id: str) -> str:
+def _get_org_provider_config(org_id: str, provider_slug: str) -> dict[str, Any]:
     result = supabase.table("organizations").select("provider_configs").eq(
         "id", org_id
     ).is_("deleted_at", "null").execute()
     if not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
     provider_configs = result.data[0].get("provider_configs") or {}
-    smartlead = provider_configs.get("smartlead") or {}
-    api_key = smartlead.get("api_key")
+    provider_config = provider_configs.get(provider_slug) or {}
+    api_key = provider_config.get("api_key")
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing org-level Smartlead API key",
+            detail=f"Missing org-level {provider_slug} API key",
         )
-    return api_key
+    return {"api_key": api_key, "instance_url": provider_config.get("instance_url")}
 
 
 def _get_campaign_for_auth(auth: AuthContext, campaign_id: str) -> dict[str, Any]:
@@ -202,6 +229,11 @@ def _get_campaign_for_auth(auth: AuthContext, campaign_id: str) -> dict[str, Any
     if not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
     return result.data[0]
+
+
+def _get_campaign_provider_slug(campaign: dict[str, Any]) -> str:
+    provider = _get_provider_by_id(campaign["provider_id"])
+    return provider["slug"]
 
 
 def _extract_provider_lead(lead: dict[str, Any]) -> dict[str, Any] | None:
@@ -324,29 +356,47 @@ async def create_campaign(
 ):
     company_id = _resolve_company_id(auth, data.company_id)
     _get_company(auth, company_id)
-    entitlement = _get_smartlead_entitlement(auth.org_id, company_id)
+    entitlement = _get_email_outreach_entitlement(auth.org_id, company_id)
+    provider = _get_provider_by_id(entitlement["provider_id"])
 
-    provider_config = entitlement.get("provider_config") or {}
-    smartlead_client_id = provider_config.get("smartlead_client_id")
-    if smartlead_client_id is None:
+    if provider["slug"] == "smartlead":
+        provider_config = entitlement.get("provider_config") or {}
+        smartlead_client_id = provider_config.get("smartlead_client_id")
+        if smartlead_client_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Company is not fully provisioned: missing smartlead_client_id",
+            )
+        provider_credentials = _get_org_provider_config(auth.org_id, "smartlead")
+        try:
+            provider_campaign = smartlead_create_campaign(
+                api_key=provider_credentials["api_key"],
+                name=data.name,
+                client_id=int(smartlead_client_id),
+            )
+        except SmartleadProviderError as exc:
+            raise HTTPException(
+                status_code=_provider_error_status(exc),
+                detail=_provider_error_detail("campaign_create", exc),
+            ) from exc
+    elif provider["slug"] == "emailbison":
+        provider_credentials = _get_org_provider_config(auth.org_id, "emailbison")
+        try:
+            provider_campaign = emailbison_create_campaign(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                name=data.name,
+            )
+        except EmailBisonProviderError as exc:
+            raise HTTPException(
+                status_code=_emailbison_provider_error_status(exc),
+                detail=_emailbison_provider_error_detail("campaign_create", exc),
+            ) from exc
+    else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Company is not fully provisioned: missing smartlead_client_id",
+            detail=f"Unsupported email_outreach provider: {provider['slug']}",
         )
-
-    api_key = _get_org_smartlead_api_key(auth.org_id)
-
-    try:
-        provider_campaign = smartlead_create_campaign(
-            api_key=api_key,
-            name=data.name,
-            client_id=int(smartlead_client_id),
-        )
-    except SmartleadProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Campaign create failed", exc),
-        ) from exc
 
     external_campaign_id = provider_campaign.get("id")
     if external_campaign_id is None:
@@ -474,21 +524,39 @@ async def update_campaign_status(
     auth: AuthContext = Depends(get_current_auth),
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
 
-    _get_smartlead_entitlement(auth.org_id, campaign["company_id"])
-    api_key = _get_org_smartlead_api_key(auth.org_id)
-
-    try:
-        provider_response = smartlead_update_campaign_status(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-            status_value=data.status,
-        )
-    except SmartleadProviderError as exc:
+    if provider_slug == "smartlead":
+        try:
+            provider_response = smartlead_update_campaign_status(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+                status_value=data.status,
+            )
+        except SmartleadProviderError as exc:
+            raise HTTPException(
+                status_code=_provider_error_status(exc),
+                detail=_provider_error_detail("campaign_status_update", exc),
+            ) from exc
+    elif provider_slug == "emailbison":
+        try:
+            provider_response = emailbison_update_campaign_status(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+                status_value=data.status,
+            )
+        except EmailBisonProviderError as exc:
+            raise HTTPException(
+                status_code=_emailbison_provider_error_status(exc),
+                detail=_emailbison_provider_error_detail("campaign_status_update", exc),
+            ) from exc
+    else:
         raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Campaign status update failed", exc),
-        ) from exc
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported email_outreach provider: {provider_slug}",
+        )
 
     updated = supabase.table("company_campaigns").update(
         {
@@ -506,8 +574,8 @@ async def get_campaign_sequence(
     auth: AuthContext = Depends(get_current_auth),
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
-    _get_smartlead_entitlement(auth.org_id, campaign["company_id"])
-    api_key = _get_org_smartlead_api_key(auth.org_id)
+    _require_smartlead_email_entitlement(auth.org_id, campaign["company_id"])
+    api_key = _get_org_provider_config(auth.org_id, "smartlead")["api_key"]
 
     try:
         sequence = smartlead_get_campaign_sequence(
@@ -530,7 +598,7 @@ async def get_campaign_sequence(
             )
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Sequence fetch failed", exc),
+            detail=_provider_error_detail("campaign_sequence_fetch", exc),
         ) from exc
 
     snapshots = supabase.table("company_campaign_sequences").select(
@@ -564,8 +632,8 @@ async def save_campaign_sequence(
     auth: AuthContext = Depends(get_current_auth),
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
-    _get_smartlead_entitlement(auth.org_id, campaign["company_id"])
-    api_key = _get_org_smartlead_api_key(auth.org_id)
+    _require_smartlead_email_entitlement(auth.org_id, campaign["company_id"])
+    api_key = _get_org_provider_config(auth.org_id, "smartlead")["api_key"]
 
     try:
         provider_payload = smartlead_save_campaign_sequence(
@@ -576,7 +644,7 @@ async def save_campaign_sequence(
     except SmartleadProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Sequence save failed", exc),
+            detail=_provider_error_detail("campaign_sequence_save", exc),
         ) from exc
 
     snapshots = supabase.table("company_campaign_sequences").select(
@@ -619,26 +687,69 @@ async def add_campaign_leads(
     auth: AuthContext = Depends(get_current_auth),
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
-    _get_smartlead_entitlement(auth.org_id, campaign["company_id"])
-    api_key = _get_org_smartlead_api_key(auth.org_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
 
     leads_payload = [lead.model_dump(exclude_none=True) for lead in data.leads]
     try:
-        smartlead_add_campaign_leads(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-            leads=leads_payload,
-        )
-        provider_leads = smartlead_get_campaign_leads(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-            limit=500,
-            offset=0,
-        )
+        if provider_slug == "smartlead":
+            smartlead_add_campaign_leads(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+                leads=leads_payload,
+            )
+            provider_leads = smartlead_get_campaign_leads(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+                limit=500,
+                offset=0,
+            )
+        elif provider_slug == "emailbison":
+            created_lead_ids: list[int] = []
+            for lead_payload in leads_payload:
+                created = emailbison_create_lead(
+                    api_key=provider_credentials["api_key"],
+                    instance_url=provider_credentials.get("instance_url"),
+                    lead=lead_payload,
+                )
+                lead_id = created.get("id")
+                if lead_id is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="Campaign leads add failed: EmailBison lead create missing id",
+                    )
+                try:
+                    created_lead_ids.append(int(lead_id))
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="Campaign leads add failed: EmailBison lead id is not numeric",
+                    )
+            emailbison_attach_leads_to_campaign(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+                lead_ids=created_lead_ids,
+            )
+            provider_leads = emailbison_list_campaign_leads(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported email_outreach provider: {provider_slug}",
+            )
     except SmartleadProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Campaign leads add failed", exc),
+            detail=_provider_error_detail("campaign_leads_add", exc),
+        ) from exc
+    except EmailBisonProviderError as exc:
+        raise HTTPException(
+            status_code=_emailbison_provider_error_status(exc),
+            detail=_emailbison_provider_error_detail("campaign_leads_add", exc),
         ) from exc
 
     added_emails = {lead.email.lower() for lead in data.leads}
@@ -692,18 +803,42 @@ async def pause_campaign_lead(
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
     lead = _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
-    api_key = _get_org_smartlead_api_key(auth.org_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
     try:
-        smartlead_pause_campaign_lead(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-            lead_id=lead["external_lead_id"],
-        )
+        if provider_slug == "smartlead":
+            smartlead_pause_campaign_lead(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+                lead_id=lead["external_lead_id"],
+            )
+        elif provider_slug == "emailbison":
+            emailbison_stop_future_emails_for_leads(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+                lead_ids=[int(lead["external_lead_id"])],
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported email_outreach provider: {provider_slug}",
+            )
     except SmartleadProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Pause lead failed", exc),
+            detail=_provider_error_detail("campaign_lead_pause", exc),
         ) from exc
+    except EmailBisonProviderError as exc:
+        raise HTTPException(
+            status_code=_emailbison_provider_error_status(exc),
+            detail=_emailbison_provider_error_detail("campaign_lead_pause", exc),
+        ) from exc
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Pause lead failed: non-numeric external lead id for EmailBison",
+        )
 
     supabase.table("company_campaign_leads").update(
         {"status": "paused", "updated_at": _now_iso()}
@@ -719,17 +854,29 @@ async def resume_campaign_lead(
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
     lead = _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
-    api_key = _get_org_smartlead_api_key(auth.org_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
     try:
-        smartlead_resume_campaign_lead(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-            lead_id=lead["external_lead_id"],
-        )
+        if provider_slug == "smartlead":
+            smartlead_resume_campaign_lead(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+                lead_id=lead["external_lead_id"],
+            )
+        elif provider_slug == "emailbison":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Resume lead is not supported for EmailBison in Phase 2",
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported email_outreach provider: {provider_slug}",
+            )
     except SmartleadProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Resume lead failed", exc),
+            detail=_provider_error_detail("campaign_lead_resume", exc),
         ) from exc
 
     supabase.table("company_campaign_leads").update(
@@ -746,18 +893,42 @@ async def unsubscribe_campaign_lead(
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
     lead = _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
-    api_key = _get_org_smartlead_api_key(auth.org_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
     try:
-        smartlead_unsubscribe_campaign_lead(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-            lead_id=lead["external_lead_id"],
-        )
+        if provider_slug == "smartlead":
+            smartlead_unsubscribe_campaign_lead(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+                lead_id=lead["external_lead_id"],
+            )
+        elif provider_slug == "emailbison":
+            emailbison_stop_future_emails_for_leads(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+                lead_ids=[int(lead["external_lead_id"])],
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported email_outreach provider: {provider_slug}",
+            )
     except SmartleadProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Unsubscribe lead failed", exc),
+            detail=_provider_error_detail("campaign_lead_unsubscribe", exc),
         ) from exc
+    except EmailBisonProviderError as exc:
+        raise HTTPException(
+            status_code=_emailbison_provider_error_status(exc),
+            detail=_emailbison_provider_error_detail("campaign_lead_unsubscribe", exc),
+        ) from exc
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsubscribe lead failed: non-numeric external lead id for EmailBison",
+        )
 
     supabase.table("company_campaign_leads").update(
         {"status": "unsubscribed", "updated_at": _now_iso()}
@@ -771,13 +942,24 @@ async def list_campaign_replies(
     auth: AuthContext = Depends(get_current_auth),
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
-    api_key = _get_org_smartlead_api_key(auth.org_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
 
     try:
-        replies = smartlead_get_campaign_replies(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-        )
+        if provider_slug == "smartlead":
+            replies = smartlead_get_campaign_replies(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+            )
+        elif provider_slug == "emailbison":
+            replies = emailbison_list_replies(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+            )
+        else:
+            replies = []
+
         for item in replies:
             parsed = _extract_provider_message(item, default_direction="inbound")
             if not parsed:
@@ -799,7 +981,7 @@ async def list_campaign_replies(
                 parsed=parsed,
                 local_lead_id=local_lead_id,
             )
-    except SmartleadProviderError:
+    except (SmartleadProviderError, EmailBisonProviderError):
         pass
 
     result = supabase.table("company_campaign_messages").select(
@@ -816,7 +998,8 @@ async def list_campaign_lead_messages(
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
     lead = _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
-    api_key = _get_org_smartlead_api_key(auth.org_id)
+    _require_smartlead_email_entitlement(auth.org_id, campaign["company_id"])
+    api_key = _get_org_provider_config(auth.org_id, "smartlead")["api_key"]
 
     try:
         messages = smartlead_get_campaign_lead_messages(
@@ -909,18 +1092,35 @@ async def get_campaign_analytics_provider(
     auth: AuthContext = Depends(get_current_auth),
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
-    _get_smartlead_entitlement(auth.org_id, campaign["company_id"])
-    api_key = _get_org_smartlead_api_key(auth.org_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
 
     try:
-        raw = smartlead_get_campaign_analytics(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-        )
+        if provider_slug == "smartlead":
+            raw = smartlead_get_campaign_analytics(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+            )
+        elif provider_slug == "emailbison":
+            raw = emailbison_get_campaign_stats(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported email_outreach provider: {provider_slug}",
+            )
     except SmartleadProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Campaign analytics fetch failed", exc),
+            detail=_provider_error_detail("campaign_analytics_fetch", exc),
+        ) from exc
+    except EmailBisonProviderError as exc:
+        raise HTTPException(
+            status_code=_emailbison_provider_error_status(exc),
+            detail=_emailbison_provider_error_detail("campaign_analytics_fetch", exc),
         ) from exc
 
     normalized = {
@@ -932,7 +1132,7 @@ async def get_campaign_analytics_provider(
 
     return CampaignAnalyticsProviderResponse(
         campaign_id=campaign_id,
-        provider="smartlead",
+        provider=provider_slug,
         provider_campaign_id=campaign["external_campaign_id"],
         normalized=normalized,
         raw=raw,

@@ -26,6 +26,8 @@ def normalize_campaign_status(value: str | None) -> NormalizedCampaignStatus:
     mapping = {
         "DRAFTED": "DRAFTED",
         "DRAFT": "DRAFTED",
+        "LAUNCHING": "DRAFTED",
+        "QUEUED": "DRAFTED",
         "ACTIVE": "ACTIVE",
         "START": "ACTIVE",
         "STARTED": "ACTIVE",
@@ -34,6 +36,10 @@ def normalize_campaign_status(value: str | None) -> NormalizedCampaignStatus:
         "PAUSE": "PAUSED",
         "STOPPED": "STOPPED",
         "STOP": "STOPPED",
+        "ARCHIVED": "STOPPED",
+        "DELETED": "STOPPED",
+        "FAILED": "STOPPED",
+        "PENDING DELETION": "STOPPED",
         "COMPLETED": "COMPLETED",
         "DONE": "COMPLETED",
     }
@@ -46,6 +52,7 @@ def normalize_lead_status(value: str | None) -> NormalizedLeadStatus:
     key = str(value).strip().lower()
     mapping = {
         "active": "active",
+        "verified": "active",
         "paused": "paused",
         "pause": "paused",
         "unsubscribed": "unsubscribed",
@@ -55,6 +62,15 @@ def normalize_lead_status(value: str | None) -> NormalizedLeadStatus:
         "bounced": "bounced",
         "bounce": "bounced",
         "pending": "pending",
+        "verifying": "pending",
+        "unverified": "pending",
+        "unknown": "pending",
+        "risky": "pending",
+        "inactive": "pending",
+        "in_sequence": "active",
+        "sequence_finished": "contacted",
+        "sequence_stopped": "paused",
+        "never_contacted": "pending",
         "contacted": "contacted",
         "connected": "connected",
         "not_interested": "not_interested",

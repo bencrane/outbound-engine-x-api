@@ -172,7 +172,13 @@ def test_provision_email_outreach_failed_on_provider_validation(monkeypatch):
     response = client.post("/api/internal/provisioning/email-outreach/c-1", json={"smartlead_client_id": 555})
 
     assert response.status_code == 502
-    assert "Provisioning failed" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["type"] == "provider_error"
+    assert detail["provider"] == "smartlead"
+    assert detail["operation"] == "email_outreach_provision"
+    assert detail["category"] == "terminal"
+    assert detail["retryable"] is False
+    assert "Invalid Smartlead API key" in detail["message"]
 
     _clear_overrides()
 

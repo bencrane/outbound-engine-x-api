@@ -159,6 +159,32 @@ def test_create_campaign_normalizes_provider_status(monkeypatch):
     _clear()
 
 
+def test_create_campaign_dispatches_to_emailbison_provider(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_entitlements"][0]["provider_id"] = "prov-emailbison"
+    tables["company_entitlements"][0]["provider_config"] = {}
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_create_campaign",
+        lambda api_key, instance_url, name: {"id": 202, "name": name, "status": "ACTIVE"},
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/campaigns/", json={"name": "EmailBison Campaign"})
+    assert response.status_code == 201
+    body = response.json()
+    assert body["external_campaign_id"] == "202"
+    assert body["status"] == "ACTIVE"
+
+    _clear()
+
+
 def test_list_campaigns_mine_only(monkeypatch):
     tables = _base_tables()
     tables["company_campaigns"] = [
@@ -370,6 +396,57 @@ def test_add_campaign_leads_and_list(monkeypatch):
     _clear()
 
 
+def test_add_campaign_leads_emailbison(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "321",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    tables["company_campaign_leads"] = []
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_create_lead",
+        lambda **kwargs: {"id": 9001, "email": kwargs["lead"]["email"], "first_name": kwargs["lead"].get("first_name"), "status": "verified"},
+    )
+    monkeypatch.setattr(campaigns_router, "emailbison_attach_leads_to_campaign", lambda **kwargs: {"success": True})
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_list_campaign_leads",
+        lambda **kwargs: [{"id": 9001, "email": "lead@example.com", "first_name": "Lead", "status": "verified"}],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    add_response = client.post(
+        "/api/campaigns/cmp-1/leads",
+        json={"leads": [{"email": "lead@example.com", "first_name": "Lead"}]},
+    )
+    assert add_response.status_code == 200
+    assert add_response.json()["affected"] == 1
+
+    list_response = client.get("/api/campaigns/cmp-1/leads")
+    assert list_response.status_code == 200
+    assert len(list_response.json()) == 1
+    assert list_response.json()[0]["status"] == "active"
+
+    _clear()
+
+
 def test_pause_resume_unsubscribe_campaign_lead(monkeypatch):
     tables = _base_tables()
     tables["company_campaigns"] = [
@@ -420,6 +497,51 @@ def test_pause_resume_unsubscribe_campaign_lead(monkeypatch):
     unsub = client.post("/api/campaigns/cmp-1/leads/lead-local-1/unsubscribe")
     assert unsub.status_code == 200
     assert unsub.json()["status"] == "unsubscribed"
+
+    _clear()
+
+
+def test_emailbison_resume_lead_not_supported(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "321",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["company_campaign_leads"] = [
+        {
+            "id": "lead-local-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "company_campaign_id": "cmp-1",
+            "provider_id": "prov-emailbison",
+            "external_lead_id": "9001",
+            "email": "lead@example.com",
+            "status": "paused",
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/campaigns/cmp-1/leads/lead-local-1/resume")
+    assert response.status_code == 409
+    assert "not supported" in response.json()["detail"].lower()
 
     _clear()
 
@@ -617,7 +739,57 @@ def test_create_campaign_maps_transient_provider_errors_to_503(monkeypatch):
     client = TestClient(app)
     response = client.post("/api/campaigns/", json={"name": "Campaign transient"})
     assert response.status_code == 503
-    assert "transient" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["type"] == "provider_error"
+    assert detail["provider"] == "smartlead"
+    assert detail["operation"] == "campaign_create"
+    assert detail["category"] == "transient"
+    assert detail["retryable"] is True
+    assert "503" in detail["message"]
+    _clear()
+
+
+def test_emailbison_campaign_status_transition_contract(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-eb-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "701",
+            "name": "EmailBison Campaign",
+            "status": "DRAFTED",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+
+    called_statuses: list[str] = []
+
+    def _fake_update(**kwargs):
+        called_statuses.append(kwargs["status_value"])
+        return {"id": 701, "status": kwargs["status_value"]}
+
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(campaigns_router, "emailbison_update_campaign_status", _fake_update)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    active = client.post("/api/campaigns/cmp-eb-1/status", json={"status": "ACTIVE"})
+    paused = client.post("/api/campaigns/cmp-eb-1/status", json={"status": "PAUSED"})
+
+    assert active.status_code == 200
+    assert active.json()["status"] == "ACTIVE"
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "PAUSED"
+    assert called_statuses == ["ACTIVE", "PAUSED"]
+
     _clear()
 
 

@@ -433,5 +433,11 @@ def test_linkedin_create_maps_transient_provider_errors_to_503(monkeypatch):
     client = TestClient(app)
     response = client.post("/api/linkedin/campaigns/", json={"name": "LinkedIn transient"})
     assert response.status_code == 503
-    assert "transient" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["type"] == "provider_error"
+    assert detail["provider"] == "heyreach"
+    assert detail["operation"] == "campaign_create"
+    assert detail["category"] == "transient"
+    assert detail["retryable"] is True
+    assert "503" in detail["message"]
     _clear()

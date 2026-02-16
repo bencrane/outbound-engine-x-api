@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field
 
 
 class EmailOutreachProvisionRequest(BaseModel):
+    provider: Literal["smartlead", "emailbison"] = Field(
+        default="smartlead",
+        description="Email outreach provider to provision for this company",
+    )
     smartlead_client_id: int | None = Field(
         default=None,
         description="Existing Smartlead client ID to bind this company to",

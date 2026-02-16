@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from src.auth import AuthContext, get_current_auth
 from src.db import supabase
 from src.domain.normalization import normalize_campaign_status, normalize_lead_status
+from src.domain.provider_errors import provider_error_detail, provider_error_http_status
 from src.models.leads import CampaignLeadMutationResponse
 from src.models.linkedin import (
     LinkedinCampaignActionRequest,
@@ -41,11 +42,11 @@ def _now_iso() -> str:
 
 
 def _provider_error_status(exc: HeyReachProviderError) -> int:
-    return status.HTTP_503_SERVICE_UNAVAILABLE if exc.retryable else status.HTTP_502_BAD_GATEWAY
+    return provider_error_http_status(exc)
 
 
-def _provider_error_detail(prefix: str, exc: HeyReachProviderError) -> str:
-    return f"{prefix} [{exc.category}]: {exc}"
+def _provider_error_detail(operation: str, exc: HeyReachProviderError) -> dict[str, Any]:
+    return provider_error_detail(provider="heyreach", operation=operation, exc=exc)
 
 
 def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
@@ -291,7 +292,7 @@ async def create_linkedin_campaign(
     except HeyReachProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Campaign create failed", exc),
+            detail=_provider_error_detail("campaign_create", exc),
         ) from exc
 
     external_campaign_id = provider_campaign.get("id") or provider_campaign.get("campaignId")
@@ -372,7 +373,7 @@ async def mutate_linkedin_campaign_status(
     except HeyReachProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Campaign action failed", exc),
+            detail=_provider_error_detail("campaign_action", exc),
         ) from exc
 
     updated = (
@@ -408,7 +409,7 @@ async def add_linkedin_campaign_leads(
     except HeyReachProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Campaign leads add failed", exc),
+            detail=_provider_error_detail("campaign_leads_add", exc),
         ) from exc
 
     incoming = {lead.email.lower() for lead in data.leads}
@@ -458,7 +459,7 @@ async def update_linkedin_campaign_lead_status(
     except HeyReachProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Lead status update failed", exc),
+            detail=_provider_error_detail("campaign_lead_status_update", exc),
         ) from exc
 
     normalized = normalize_lead_status(data.status)
@@ -492,7 +493,7 @@ async def send_linkedin_campaign_message(
     except HeyReachProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Send message failed", exc),
+            detail=_provider_error_detail("campaign_message_send", exc),
         ) from exc
 
     external_message_id = str(provider.get("messageId") or provider.get("id") or f"local-{datetime.now(timezone.utc).timestamp()}")
@@ -529,7 +530,7 @@ async def get_linkedin_campaign_metrics(campaign_id: str, auth: AuthContext = De
     except HeyReachProviderError as exc:
         raise HTTPException(
             status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("Campaign metrics fetch failed", exc),
+            detail=_provider_error_detail("campaign_metrics_fetch", exc),
         ) from exc
 
     normalized = {

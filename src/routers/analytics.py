@@ -239,7 +239,7 @@ async def get_reliability_analytics(
     auth: AuthContext = Depends(get_current_auth),
 ):
     resolved_company_id = _resolve_company_scope(auth, company_id)
-    if provider_slug and provider_slug not in {"smartlead", "heyreach"}:
+    if provider_slug and provider_slug not in {"smartlead", "heyreach", "emailbison"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported provider")
 
     query = supabase.table("webhook_events").select(
