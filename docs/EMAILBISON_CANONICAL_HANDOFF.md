@@ -1,6 +1,6 @@
 # EmailBison Canonical Handoff
 
-Generated: `2026-02-16T07:00:00Z` (UTC)
+Generated: `2026-02-16T07:30:00Z` (UTC)
 
 ## Canonical Source + Naming Caveat
 
@@ -304,6 +304,13 @@ Rollout readiness status:
 - Remaining gated/contract-limited items:
   - Inbound webhook signature verification is blocked on `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16`.
   - Registry contract gaps remain: `custom_variables.update`, `custom_variables.delete`, `tags.update` as `blocked_contract_missing`.
+- **v1 closure status**: “EmailBison rollout complete for all discoverable contracts; remaining work is provider-contract gated only (webhook signature verification + 3 missing update/delete endpoints).”
+
+Blocked items (explicit tracking):
+- `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16`
+- `custom_variables.update` -> `blocked_contract_missing`
+- `custom_variables.delete` -> `blocked_contract_missing`
+- `tags.update` -> `blocked_contract_missing`
 
 ### Phase 1 - Provider foundation + read paths
 
