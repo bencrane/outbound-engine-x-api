@@ -18,6 +18,7 @@ _EP_CAMPAIGNS = "/api/campaigns"
 _EP_LEADS = "/api/leads"
 _EP_REPLIES = "/api/replies"
 _EP_SENDER_EMAILS = "/api/sender-emails"
+_EP_WARMUP_SENDER_EMAILS = "/api/warmup/sender-emails"
 
 
 class EmailBisonProviderError(Exception):
@@ -739,21 +740,257 @@ def get_campaign_stats(
 
 def list_sender_emails(
     api_key: str,
+    search: str | None = None,
+    tag_ids: list[int] | None = None,
+    excluded_tag_ids: list[int] | None = None,
+    without_tags: bool | None = None,
     instance_url: str | None = None,
     timeout_seconds: float = 12.0,
 ) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {}
+    if search is not None:
+        params["search"] = search
+    if tag_ids is not None:
+        params["tag_ids"] = tag_ids
+    if excluded_tag_ids is not None:
+        params["excluded_tag_ids"] = excluded_tag_ids
+        params["filters.excluded_tag_ids"] = excluded_tag_ids
+    if without_tags is not None:
+        params["without_tags"] = without_tags
+        params["filters.without_tags"] = without_tags
     data = _request_json(
         method="GET",
         candidate_paths=[_EP_SENDER_EMAILS],
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
+        params=params or None,
     )
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and isinstance(data.get("items"), list):
         return data["items"]
     raise EmailBisonProviderError("Unexpected EmailBison sender-emails response shape")
+
+
+def get_sender_email(
+    api_key: str,
+    sender_email_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"{_EP_SENDER_EMAILS}/{sender_email_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison sender-email response type")
+
+
+def update_sender_email(
+    api_key: str,
+    sender_email_id: int | str,
+    updates: dict[str, Any],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=[f"{_EP_SENDER_EMAILS}/{sender_email_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=updates,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison update sender-email response type")
+
+
+def delete_sender_email(
+    api_key: str,
+    sender_email_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        candidate_paths=[f"{_EP_SENDER_EMAILS}/{sender_email_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison delete sender-email response type")
+
+
+def list_sender_emails_with_warmup_stats(
+    api_key: str,
+    start_date: str,
+    end_date: str,
+    search: str | None = None,
+    tag_ids: list[int] | None = None,
+    excluded_tag_ids: list[int] | None = None,
+    without_tags: bool | None = None,
+    warmup_status: str | None = None,
+    mx_records_status: str | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"start_date": start_date, "end_date": end_date}
+    if search is not None:
+        params["search"] = search
+    if tag_ids is not None:
+        params["tag_ids"] = tag_ids
+    if excluded_tag_ids is not None:
+        params["excluded_tag_ids"] = excluded_tag_ids
+        params["filters.excluded_tag_ids"] = excluded_tag_ids
+    if without_tags is not None:
+        params["without_tags"] = without_tags
+        params["filters.without_tags"] = without_tags
+    if warmup_status is not None:
+        params["warmup_status"] = warmup_status
+    if mx_records_status is not None:
+        params["mx_records_status"] = mx_records_status
+    data = _request_json(
+        method="GET",
+        candidate_paths=[_EP_WARMUP_SENDER_EMAILS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        params=params,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison warmup sender-emails response shape")
+
+
+def get_sender_email_warmup_details(
+    api_key: str,
+    sender_email_id: int | str,
+    start_date: str,
+    end_date: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"{_EP_WARMUP_SENDER_EMAILS}/{sender_email_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        params={"start_date": start_date, "end_date": end_date},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison sender warmup details response type")
+
+
+def enable_warmup_for_sender_emails(
+    api_key: str,
+    sender_email_ids: list[int],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=[f"{_EP_WARMUP_SENDER_EMAILS}/enable"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"sender_email_ids": sender_email_ids},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison warmup enable response type")
+
+
+def disable_warmup_for_sender_emails(
+    api_key: str,
+    sender_email_ids: list[int],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=[f"{_EP_WARMUP_SENDER_EMAILS}/disable"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"sender_email_ids": sender_email_ids},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison warmup disable response type")
+
+
+def update_sender_email_daily_warmup_limits(
+    api_key: str,
+    sender_email_ids: list[int],
+    daily_limit: int,
+    daily_reply_limit: int | str | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "sender_email_ids": sender_email_ids,
+        "daily_limit": daily_limit,
+    }
+    if daily_reply_limit is not None:
+        payload["daily_reply_limit"] = daily_reply_limit
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=[f"{_EP_WARMUP_SENDER_EMAILS}/update-daily-warmup-limits"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison warmup limits response type")
+
+
+def check_sender_email_mx_records(
+    api_key: str,
+    sender_email_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_SENDER_EMAILS}/{sender_email_id}/check-mx-records"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison mx-record check response type")
+
+
+def bulk_check_missing_mx_records(
+    api_key: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_SENDER_EMAILS}/bulk-check-missing-mx-records"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison bulk mx-record check response type")
 
 
 def webhook_resource_paths(webhook_id: int | str) -> dict[str, str]:
@@ -905,5 +1142,17 @@ EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     "list_lead_replies": [{"method": "GET", "path": "/api/leads/{lead_id}/replies"}],
     "get_campaign_stats": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/stats"}],
     "list_sender_emails": [{"method": "GET", "path": _EP_SENDER_EMAILS}],
+    "get_sender_email": [{"method": "GET", "path": "/api/sender-emails/{senderEmailId}"}],
+    "update_sender_email": [{"method": "PATCH", "path": "/api/sender-emails/{senderEmailId}"}],
+    "delete_sender_email": [{"method": "DELETE", "path": "/api/sender-emails/{senderEmailId}"}],
+    "list_sender_emails_with_warmup_stats": [{"method": "GET", "path": "/api/warmup/sender-emails"}],
+    "get_sender_email_warmup_details": [{"method": "GET", "path": "/api/warmup/sender-emails/{senderEmailId}"}],
+    "enable_warmup_for_sender_emails": [{"method": "PATCH", "path": "/api/warmup/sender-emails/enable"}],
+    "disable_warmup_for_sender_emails": [{"method": "PATCH", "path": "/api/warmup/sender-emails/disable"}],
+    "update_sender_email_daily_warmup_limits": [
+        {"method": "PATCH", "path": "/api/warmup/sender-emails/update-daily-warmup-limits"}
+    ],
+    "check_sender_email_mx_records": [{"method": "POST", "path": "/api/sender-emails/{senderEmailId}/check-mx-records"}],
+    "bulk_check_missing_mx_records": [{"method": "POST", "path": "/api/sender-emails/bulk-check-missing-mx-records"}],
     "delete_webhook": [{"method": "DELETE", "path": "/api/webhook-url/{id}"}],
 }

@@ -1,6 +1,6 @@
 # EmailBison Canonical Handoff
 
-Generated: `2026-02-16T02:17:02Z` (UTC)
+Generated: `2026-02-16T03:06:00Z` (UTC)
 
 ## Canonical Source + Naming Caveat
 
@@ -99,18 +99,27 @@ Confidence rubric:
 - **Endpoints**
   - `GET /api/sender-emails`
   - `GET /api/sender-emails/{senderEmailId}`
-  - `POST /api/sender-emails/imap-smtp`
   - `PATCH /api/sender-emails/{senderEmailId}`
   - `DELETE /api/sender-emails/{senderEmailId}`
+  - `POST /api/sender-emails/{senderEmailId}/check-mx-records`
+  - `POST /api/sender-emails/bulk-check-missing-mx-records`
+  - `GET /api/warmup/sender-emails`
+  - `GET /api/warmup/sender-emails/{senderEmailId}`
+  - `PATCH /api/warmup/sender-emails/enable`
+  - `PATCH /api/warmup/sender-emails/disable`
+  - `PATCH /api/warmup/sender-emails/update-daily-warmup-limits`
 - **Required params**
-  - IMAP/SMTP create requires: `name`, `email`, `password`, `imap_server`, `imap_port`, `smtp_server`, `smtp_port`.
+  - Warmup list/details require `start_date`, `end_date`.
+  - Warmup bulk write endpoints require `sender_email_ids[]` (+ `daily_limit` for limit update).
   - Update accepts optional settings like `daily_limit`, `name`, `email_signature`.
 - **Key response fields**
   - `id`, `name`, `email`, `status`, `type`
   - `daily_limit`, IMAP/SMTP metadata
-  - aggregate counters: `emails_sent_count`, `total_replied_count`, `total_opened_count`, `bounced_count`, `interested_leads_count`, etc.
+  - warmup fields: `warmup_score`, `warmup_emails_sent`, `warmup_replies_received`, bounce counters
+  - healthcheck fields: `email_host`, `mx_records_valid`, `mx_records[]`
 - **Known caveats/inconsistencies**
   - Both flat filter params (`tag_ids`, `without_tags`) and nested filter forms (`filters.without_tags`) appear.
+  - Warmup specs mark date bounds as required but descriptions also mention defaults; integration passes explicit dates to avoid ambiguity.
 - **Confidence**: **High**
 
 ### Webhooks
@@ -236,6 +245,7 @@ Current rollout progress:
 - Slice 1 (Leads + lead lifecycle): in progress with client bulk/update lifecycle methods, campaign-router integration updates, and strict endpoint registry/test guardrails.
 - Slice 2 (Campaigns advanced): in progress with EmailBison sequence-step and schedule contract integration.
 - Slice 3 (Inbox/replies): in progress with reply detail/thread surface and campaign-reply contract routing.
+- Slice 4 (Sender emails + warmup + healthcheck): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/inboxes.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 
 ### Phase 1 - Provider foundation + read paths
 

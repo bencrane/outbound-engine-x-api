@@ -286,6 +286,98 @@ def test_list_campaign_replies_uses_campaign_endpoint(monkeypatch):
     assert calls == [("GET", "https://x.example/api/campaigns/90/replies")]
 
 
+def test_sender_email_get_update_delete_endpoints(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        if kwargs["method"] == "DELETE":
+            return _FakeResponse(200, {"data": {"success": True}})
+        return _FakeResponse(200, {"data": {"id": 11, "email": "a@example.com"}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    got = emailbison_client.get_sender_email(
+        api_key="k",
+        sender_email_id=11,
+        instance_url="https://x.example",
+    )
+    updated = emailbison_client.update_sender_email(
+        api_key="k",
+        sender_email_id=11,
+        updates={"name": "Updated"},
+        instance_url="https://x.example",
+    )
+    deleted = emailbison_client.delete_sender_email(
+        api_key="k",
+        sender_email_id=11,
+        instance_url="https://x.example",
+    )
+
+    assert got["id"] == 11
+    assert updated["id"] == 11
+    assert deleted["success"] is True
+    assert calls == [
+        ("GET", "https://x.example/api/sender-emails/11", None),
+        ("PATCH", "https://x.example/api/sender-emails/11", {"name": "Updated"}),
+        ("DELETE", "https://x.example/api/sender-emails/11", None),
+    ]
+
+
+def test_warmup_and_mx_check_endpoints(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        return _FakeResponse(200, {"data": {"success": True, "id": 11, "warmup_score": 70}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    _ = emailbison_client.get_sender_email_warmup_details(
+        api_key="k",
+        sender_email_id=11,
+        start_date="2026-02-01",
+        end_date="2026-02-15",
+        instance_url="https://x.example",
+    )
+    _ = emailbison_client.enable_warmup_for_sender_emails(
+        api_key="k",
+        sender_email_ids=[11, 12],
+        instance_url="https://x.example",
+    )
+    _ = emailbison_client.disable_warmup_for_sender_emails(
+        api_key="k",
+        sender_email_ids=[11, 12],
+        instance_url="https://x.example",
+    )
+    _ = emailbison_client.update_sender_email_daily_warmup_limits(
+        api_key="k",
+        sender_email_ids=[11, 12],
+        daily_limit=8,
+        daily_reply_limit="auto",
+        instance_url="https://x.example",
+    )
+    _ = emailbison_client.check_sender_email_mx_records(
+        api_key="k",
+        sender_email_id=11,
+        instance_url="https://x.example",
+    )
+    _ = emailbison_client.bulk_check_missing_mx_records(
+        api_key="k",
+        instance_url="https://x.example",
+    )
+
+    assert calls[0][0] == "GET"
+    assert calls[0][1] == "https://x.example/api/warmup/sender-emails/11"
+    assert calls[1] == ("PATCH", "https://x.example/api/warmup/sender-emails/enable", {"sender_email_ids": [11, 12]})
+    assert calls[2] == ("PATCH", "https://x.example/api/warmup/sender-emails/disable", {"sender_email_ids": [11, 12]})
+    assert calls[3] == (
+        "PATCH",
+        "https://x.example/api/warmup/sender-emails/update-daily-warmup-limits",
+        {"sender_email_ids": [11, 12], "daily_limit": 8, "daily_reply_limit": "auto"},
+    )
+    assert calls[4] == ("POST", "https://x.example/api/sender-emails/11/check-mx-records", None)
+    assert calls[5] == ("POST", "https://x.example/api/sender-emails/bulk-check-missing-mx-records", None)
+
+
 def test_registry_covers_all_public_client_methods():
     excluded = {"webhook_resource_paths"}
     public_callables = {

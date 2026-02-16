@@ -48,6 +48,20 @@ If a new public EmailBison client method is added without registry entry, tests 
 - `GET /api/campaigns/{campaign_id}/replies` -> `list_campaign_replies()`
 - `GET /api/leads/{lead_id}/replies` -> `list_lead_replies()`
 
+## Slice 4 Coverage (Sender Emails + Warmup + Healthcheck)
+
+- `GET /api/sender-emails` -> `list_sender_emails()`
+- `GET /api/sender-emails/{senderEmailId}` -> `get_sender_email()`
+- `PATCH /api/sender-emails/{senderEmailId}` -> `update_sender_email()`
+- `DELETE /api/sender-emails/{senderEmailId}` -> `delete_sender_email()`
+- `GET /api/warmup/sender-emails` -> `list_sender_emails_with_warmup_stats()`
+- `GET /api/warmup/sender-emails/{senderEmailId}` -> `get_sender_email_warmup_details()`
+- `PATCH /api/warmup/sender-emails/enable` -> `enable_warmup_for_sender_emails()`
+- `PATCH /api/warmup/sender-emails/disable` -> `disable_warmup_for_sender_emails()`
+- `PATCH /api/warmup/sender-emails/update-daily-warmup-limits` -> `update_sender_email_daily_warmup_limits()`
+- `POST /api/sender-emails/{senderEmailId}/check-mx-records` -> `check_sender_email_mx_records()`
+- `POST /api/sender-emails/bulk-check-missing-mx-records` -> `bulk_check_missing_mx_records()`
+
 ## Guardrails
 
 - Phase 3 webhook signature verification remains blocked until `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16` is resolved.
