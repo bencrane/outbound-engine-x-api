@@ -13,6 +13,8 @@ Generated: `2026-02-16T03:33:25Z` (UTC)
 - Stage 0 (canonical discovery + planning) is complete.
 - Stage 1 (provider foundation + capability wiring) is implemented.
 - Stage 2 (direct-mail workflow rollout for address verification + postcards + letters) is implemented.
+- Stage 3 (Lob webhook ingestion + idempotent projection + replay glue) is implemented with signature verification intentionally gated.
+- Stage 4 (operator hardening + regression sweep + release closure) is implemented.
 
 ## 1) Lob Surface Mapped To Internal Capability Model
 
@@ -226,20 +228,58 @@ Stage 2 implementation status:
 - Added `company_direct_mail_pieces` persistence mapping for tenant-safe piece retrieval/cancel/list behavior.
 - Added targeted endpoint tests for happy paths, auth boundaries, provider dispatch, validation errors, normalized contracts, and provider error-shape behavior.
 
-### Stage 3 - Webhooks + idempotency hardening
+### Stage 3 - Webhooks + idempotency hardening (implemented, signature gated)
 
 - Add Lob webhook endpoint in `src/routers/webhooks.py`.
 - Implement signature verification once `lob.webhooks.signature_contract` is resolved.
 - Implement idempotent event ingestion/dedupe and replay protection.
 - Add webhook authorization + dedupe + normalization tests.
 
+Stage 3 implementation status:
+
+- Implemented Lob inbound webhook endpoint:
+  - `POST /api/webhooks/lob`
+- Implemented idempotent event ingestion:
+  - stable dedupe key derivation with provider event identity fallback
+  - event envelope persistence in `webhook_events`
+  - deterministic duplicate handling (`duplicate_ignored`)
+- Implemented normalized Lob event projection to direct-mail piece state:
+  - `piece.created|updated|processed|in_transit|delivered|returned|canceled|re-routed|failed|unknown`
+  - projection into `company_direct_mail_pieces.status` + update timestamps
+- Integrated replay support for Lob into existing super-admin replay endpoints (single/bulk/query).
+- Signature verification remains explicitly gated:
+  - processing mode is `disabled_pending_contract` (no cryptographic verification rules implemented yet).
+
 ### Stage 4 - Operator hardening + deferred scope revisit
 
-- Observability metrics and runbook updates for direct-mail processing.
-- Retry/backoff/rate-limit tuning with load-aware safeguards.
+- Observability metrics and structured logs for direct-mail create/list/get/cancel and provider error paths.
+- Correlation/request-id propagation for direct-mail route logs where request context is available.
+- Operator runbook published: `docs/LOB_OPERATOR_RUNBOOK.md` (incident triage, webhook duplicate diagnostics, replay workflow, failure modes).
+- Full regression sweep across direct-mail, webhooks, provisioning/auth boundary, and provider/core regression suites.
 - Reassess deferred domains (self-mailers/checks) based on product need.
 
-## 9) Multi-Tenant Safety Requirements (Implementation Guardrails)
+Stage 4 implementation status:
+
+- Added direct-mail route instrumentation:
+  - `direct_mail.requests.received`
+  - `direct_mail.requests.processed`
+  - `direct_mail.requests.failed` (including provider error category + retryability labels)
+- Added structured event logging for direct-mail operation success/failure and provider-not-implemented paths.
+- Confirmed webhook ingest + duplicate + replay observability remains active for `lob`.
+- Added operator runbook and linked operational procedures for replay escalation and diagnostics.
+- Completed broader regression sweep for Lob + existing provider/core suites.
+
+## 11) Operator Runbook
+
+- Primary runbook: `docs/LOB_OPERATOR_RUNBOOK.md`
+- Covers:
+  - direct-mail incident triage,
+  - webhook backlog/duplicate diagnostics,
+  - replay escalation flow (single -> bulk -> query),
+  - expected status states and failure modes,
+  - explicit signature-verification pending-contract note.
+
+## 12) Multi-Tenant Safety Requirements (Implementation Guardrails)
 
 - Every tenant data read/write must scope by `org_id` from `AuthContext`.
 - Never accept `org_id` from request payloads.
@@ -247,12 +287,12 @@ Stage 2 implementation status:
 - Error responses must not leak cross-org existence.
 - Provider IDs/object IDs must not be treated as globally trustworthy; always map and validate within tenant scope.
 
-## 10) Stage 0 Readiness Verdict
+## 13) Current Readiness Verdict
 
 `ready_with_blockers`
 
 Rationale:
 
-- Canonical source mapping and staged architecture plan are complete.
-- v1 scope and out-of-scope are explicit.
-- Remaining blocker is isolated as `blocked_contract_missing` without blocking non-dependent implementation work.
+- Lob v1 direct-mail workflows (verification/postcards/letters), webhook ingest/projection/replay, and operator hardening are implemented.
+- Full regression coverage for Lob paths and key provider/core suites has passed.
+- Remaining blocker is isolated to `lob.webhooks.signature_contract` (`blocked_contract_missing`) without blocking non-dependent runtime operation.

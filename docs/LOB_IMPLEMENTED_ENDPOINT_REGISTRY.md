@@ -16,7 +16,7 @@ Purpose: strict proof of what Lob endpoints are implemented in this repo for `di
 - Contract status registry constant: `src/providers/lob/client.py` -> `LOB_CONTRACT_STATUS_REGISTRY`
 - Guard test: `tests/test_lob_client.py::test_registry_covers_all_public_client_methods`
 
-Stage 2 note: Lob provider client foundation and direct-mail capability-facing workflows are implemented for address verification, postcards, and letters.
+Stage 4 note: Lob provider client foundation, direct-mail capability workflows, webhook ingestion/projection/replay, and operator hardening are implemented. Signature crypto verification remains blocked by contract.
 
 ## Registry Rows (Stage 0 Baseline)
 
@@ -44,20 +44,21 @@ Stage 2 note: Lob provider client foundation and direct-mail capability-facing w
 | Checks | GET | `/v1/checks` | `list_checks()` | deferred | out of v1 scope |
 | Checks | GET | `/v1/checks/{chk_id}` | `get_check()` | deferred | out of v1 scope |
 | Checks | DELETE | `/v1/checks/{chk_id}` | `cancel_check()` | deferred | out of v1 scope |
-| Webhooks/events | N/A | inbound webhook receiver in this API | `ingest_tracking_event()` | deferred | endpoint path to be added in Stage 3 |
+| Webhooks/events | POST | `/api/webhooks/lob` (inbound) | `ingest_lob_webhook()` | implemented | Stage 3 ingest + dedupe + normalized projection + replay support |
 | Webhooks/events | N/A | signature verification contract | `verify_webhook_signature()` | blocked_contract_missing | exact signing contract not locked |
 | Idempotency | N/A | write-request idempotency contract | `build_idempotency_headers()` | deferred | documented: `Idempotency-Key` header or `idempotency_key` query param, 24h retention, never send both at once |
 
 ## Status Summary
 
-- `implemented`: 10
-- `deferred`: 14
+- `implemented`: 11
+- `deferred`: 13
 - `blocked_contract_missing`: 1
 
 ## Blocked Contract Items
 
 - `lob.webhooks.signature_contract` -> `blocked_contract_missing`
   - Missing exact signature header/algorithm/canonicalization/replay requirements in currently extracted canonical docs.
+  - Stage 3 placeholder reference: `lob.webhooks.signature_contract` (verification mode currently `disabled_pending_contract` in ingest response/audit envelope).
 
 ## Deferred Contract Items
 
@@ -84,12 +85,35 @@ Stage 2 note: Lob provider client foundation and direct-mail capability-facing w
 - `GET /api/direct-mail/letters/{piece_id}`
 - `POST /api/direct-mail/letters/{piece_id}/cancel`
 
+## Webhook + Replay (Stage 3)
+
+- Inbound endpoint implemented:
+  - `POST /api/webhooks/lob`
+- Ingest behavior implemented:
+  - provider event dedupe key generation + idempotent persistence in `webhook_events`
+  - normalized Lob event projection to direct-mail piece statuses
+  - signature verification mode explicitly set to `disabled_pending_contract` (no crypto verification yet)
+- Super-admin replay surfaces now include `lob`:
+  - `POST /api/webhooks/replay/{provider_slug}/{event_key}`
+  - `POST /api/webhooks/replay-bulk`
+  - `POST /api/webhooks/replay-query`
+
+## Operator Hardening (Stage 4)
+
+- Direct-mail route observability is implemented for:
+  - create/list/get/cancel flows across postcards and letters
+  - provider error taxonomy surfacing with structured failure logs
+- Correlated request-id logging is wired where request context is available.
+- Operator runbook published:
+  - `docs/LOB_OPERATOR_RUNBOOK.md`
+
 ## Stage Alignment
 
 - Stage 0: docs only (completed).
 - Stage 1: provider client skeleton + capability wiring (`direct_mail`) (completed).
 - Stage 2: postcard/letter/address-verification workflows + normalized contracts + dispatch tests (completed).
-- Stage 3: webhook ingestion + signature verification after contract unblock.
+- Stage 3: webhook ingestion + idempotent projection + replay support (completed; signature gated).
+- Stage 4: operator hardening + broader regression + release closure docs (completed).
 
 ## Guardrail
 

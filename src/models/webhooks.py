@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 class WebhookEventListItem(BaseModel):
     id: str
-    provider_slug: Literal["smartlead", "heyreach"]
+    provider_slug: Literal["smartlead", "heyreach", "lob"]
     event_key: str
     event_type: str | None = None
     status: Literal["processed", "replayed", "failed", "dead_letter"] | None = None
@@ -23,13 +23,13 @@ class WebhookEventListItem(BaseModel):
 
 class WebhookReplayResponse(BaseModel):
     status: Literal["replayed"]
-    provider_slug: Literal["smartlead", "heyreach"]
+    provider_slug: Literal["smartlead", "heyreach", "lob"]
     event_key: str
     event_type: str
 
 
 class WebhookReplayBulkRequest(BaseModel):
-    provider_slug: Literal["smartlead", "heyreach"]
+    provider_slug: Literal["smartlead", "heyreach", "lob"]
     event_keys: list[str] = Field(default_factory=list, max_length=100)
 
 
@@ -40,7 +40,7 @@ class WebhookReplayBulkItem(BaseModel):
 
 
 class WebhookReplayBulkResponse(BaseModel):
-    provider_slug: Literal["smartlead", "heyreach"]
+    provider_slug: Literal["smartlead", "heyreach", "lob"]
     requested: int
     replayed: int
     not_found: int
@@ -48,7 +48,7 @@ class WebhookReplayBulkResponse(BaseModel):
 
 
 class WebhookReplayQueryRequest(BaseModel):
-    provider_slug: Literal["smartlead", "heyreach"]
+    provider_slug: Literal["smartlead", "heyreach", "lob"]
     event_type: str | None = None
     org_id: str | None = None
     company_id: str | None = None
@@ -58,7 +58,7 @@ class WebhookReplayQueryRequest(BaseModel):
 
 
 class WebhookReplayQueryResponse(BaseModel):
-    provider_slug: Literal["smartlead", "heyreach"]
+    provider_slug: Literal["smartlead", "heyreach", "lob"]
     matched: int
     replayed: int
     results: list[WebhookReplayBulkItem]

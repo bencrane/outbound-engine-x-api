@@ -51,6 +51,45 @@ def _extract_event_type(payload: dict[str, Any]) -> str:
     )
 
 
+def _normalize_lob_event_type(value: str | None) -> str:
+    if not value:
+        return "piece.unknown"
+    key = str(value).strip().lower().replace("-", "_")
+    if "." in key:
+        key = key.split(".")[-1]
+    mapping = {
+        "created": "piece.created",
+        "updated": "piece.updated",
+        "processed": "piece.processed",
+        "in_transit": "piece.in_transit",
+        "in_transit_local": "piece.in_transit",
+        "delivered": "piece.delivered",
+        "returned": "piece.returned",
+        "canceled": "piece.canceled",
+        "cancelled": "piece.canceled",
+        "re_routed": "piece.re-routed",
+        "rerouted": "piece.re-routed",
+        "failed": "piece.failed",
+    }
+    return mapping.get(key, "piece.unknown")
+
+
+def _normalize_lob_piece_status(normalized_event_type: str) -> str:
+    mapping = {
+        "piece.created": "queued",
+        "piece.updated": "processing",
+        "piece.processed": "ready_for_mail",
+        "piece.in_transit": "in_transit",
+        "piece.delivered": "delivered",
+        "piece.returned": "returned",
+        "piece.canceled": "canceled",
+        "piece.re-routed": "in_transit",
+        "piece.failed": "failed",
+        "piece.unknown": "unknown",
+    }
+    return mapping.get(normalized_event_type, "unknown")
+
+
 def _extract_campaign_id(payload: dict[str, Any]) -> str | None:
     campaign_id = payload.get("campaign_id") or payload.get("campaignId")
     if campaign_id is None and isinstance(payload.get("campaign"), dict):
@@ -160,6 +199,27 @@ def _compute_event_key(payload: dict[str, Any], raw_body: bytes) -> str:
     return hashlib.sha256(raw_body).hexdigest()
 
 
+def _compute_lob_event_key(payload: dict[str, Any], raw_body: bytes) -> str:
+    for key in ("id", "event_id"):
+        if payload.get(key):
+            return f"lob:{payload[key]}"
+
+    body = payload.get("body") if isinstance(payload.get("body"), dict) else {}
+    resource = body.get("resource") if isinstance(body.get("resource"), dict) else {}
+    resource_id = (
+        resource.get("id")
+        or payload.get("resource_id")
+        or payload.get("object_id")
+        or payload.get("piece_id")
+        or payload.get("mailpiece_id")
+    )
+    event_type = payload.get("type") or payload.get("event_type") or payload.get("event")
+    timestamp = payload.get("date_created") or payload.get("created_at") or payload.get("time")
+    if resource_id and event_type and timestamp:
+        return f"lob:{resource_id}:{event_type}:{timestamp}"
+    return f"lob:{hashlib.sha256(raw_body).hexdigest()}"
+
+
 def _persist_event_or_raise_duplicate(
     provider_slug: str,
     event_key: str,
@@ -217,6 +277,83 @@ def _resolve_campaign(campaign_external_id: str, provider_slug: str) -> dict[str
     if not campaign.data:
         return None
     return campaign.data[0]
+
+
+def _resolve_direct_mail_piece(
+    *,
+    provider_slug: str,
+    piece_external_id: str,
+) -> dict[str, Any] | None:
+    provider_id = _resolve_provider_id(provider_slug)
+    query = supabase.table("company_direct_mail_pieces").select(
+        "id, org_id, company_id, provider_id, external_piece_id, piece_type, status"
+    ).eq("external_piece_id", piece_external_id).is_("deleted_at", "null")
+    if provider_id:
+        query = query.eq("provider_id", provider_id)
+    result = query.execute()
+    if not result.data:
+        return None
+    return result.data[0]
+
+
+def _upsert_direct_mail_piece_from_lob_event(
+    *,
+    piece_external_id: str,
+    normalized_event_type: str,
+    payload: dict[str, Any],
+    piece: dict[str, Any] | None,
+) -> dict[str, Any]:
+    piece_body = payload.get("body") if isinstance(payload.get("body"), dict) else {}
+    resource = piece_body.get("resource") if isinstance(piece_body.get("resource"), dict) else {}
+    resource_type = str(resource.get("object") or resource.get("type") or payload.get("resource_type") or "").lower()
+    piece_type = "postcard" if "postcard" in resource_type else ("letter" if "letter" in resource_type else None)
+    status_value = _normalize_lob_piece_status(normalized_event_type)
+    send_date = resource.get("send_date")
+    metadata = resource.get("metadata") if isinstance(resource.get("metadata"), dict) else None
+    now_iso = _now_iso()
+
+    if piece:
+        update_payload = {
+            "status": status_value,
+            "send_date": send_date,
+            "metadata": metadata,
+            "raw_payload": payload,
+            "updated_at": now_iso,
+        }
+        supabase.table("company_direct_mail_pieces").update(update_payload).eq(
+            "id", piece["id"]
+        ).eq("org_id", piece["org_id"]).execute()
+        piece.update(update_payload)
+        return piece
+
+    if piece_type is None:
+        return {}
+
+    provider_id = _resolve_provider_id("lob")
+    if not provider_id:
+        return {}
+
+    org_id = payload.get("org_id")
+    company_id = payload.get("company_id")
+    insert_payload = {
+        "org_id": org_id,
+        "company_id": company_id,
+        "provider_id": provider_id,
+        "external_piece_id": piece_external_id,
+        "piece_type": piece_type,
+        "status": status_value,
+        "send_date": send_date,
+        "metadata": metadata,
+        "raw_payload": payload,
+        "created_by_user_id": None,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    # Without tenant context this row cannot be created safely.
+    if not org_id or not company_id:
+        return {}
+    created = supabase.table("company_direct_mail_pieces").insert(insert_payload).execute()
+    return created.data[0] if created.data else {}
 
 
 def _apply_event_to_local_state(
@@ -286,9 +423,29 @@ def _replay_webhook_event(
 ) -> WebhookReplayResponse:
     payload = event_row.get("payload") or {}
     event_type = event_row.get("event_type") or _extract_event_type(payload)
-    campaign_external_id = _extract_campaign_id(payload)
-    campaign = _resolve_campaign(campaign_external_id, provider_slug) if campaign_external_id else None
-    _apply_event_to_local_state(campaign=campaign, event_type=event_type, payload=payload)
+    if provider_slug == "lob":
+        piece_external_id = (
+            payload.get("resource_id")
+            or payload.get("piece_id")
+            or payload.get("object_id")
+            or (
+                payload.get("body", {}).get("resource", {}).get("id")
+                if isinstance(payload.get("body"), dict) and isinstance(payload.get("body", {}).get("resource"), dict)
+                else None
+            )
+        )
+        if piece_external_id:
+            piece = _resolve_direct_mail_piece(provider_slug="lob", piece_external_id=str(piece_external_id))
+            _upsert_direct_mail_piece_from_lob_event(
+                piece_external_id=str(piece_external_id),
+                normalized_event_type=event_type,
+                payload=payload,
+                piece=piece,
+            )
+    else:
+        campaign_external_id = _extract_campaign_id(payload)
+        campaign = _resolve_campaign(campaign_external_id, provider_slug) if campaign_external_id else None
+        _apply_event_to_local_state(campaign=campaign, event_type=event_type, payload=payload)
     next_replay_count = int(event_row.get("replay_count") or 0) + 1
     now_iso = _now_iso()
     supabase.table("webhook_events").update(
@@ -519,6 +676,148 @@ async def ingest_heyreach_webhook(request: Request):
     return {"status": "processed", "event_type": event_type, "event_key": event_key}
 
 
+@router.post("/lob")
+async def ingest_lob_webhook(request: Request):
+    req_id = _request_id(request)
+    raw_body = await request.body()
+    signature_mode = "disabled_pending_contract"
+    incr_metric("webhook.events.received", provider_slug="lob")
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except json.JSONDecodeError:
+        payload = {"raw_body": raw_body.decode("utf-8", errors="replace"), "malformed_json": True}
+
+    raw_event_type = _extract_event_type(payload)
+    normalized_event_type = _normalize_lob_event_type(raw_event_type)
+    event_key = _compute_lob_event_key(payload, raw_body)
+    piece_external_id = (
+        payload.get("resource_id")
+        or payload.get("piece_id")
+        or payload.get("object_id")
+        or (
+            payload.get("body", {}).get("resource", {}).get("id")
+            if isinstance(payload.get("body"), dict) and isinstance(payload.get("body", {}).get("resource"), dict)
+            else None
+        )
+    )
+    piece = _resolve_direct_mail_piece(provider_slug="lob", piece_external_id=str(piece_external_id)) if piece_external_id else None
+    org_id = piece["org_id"] if piece else None
+    company_id = piece["company_id"] if piece else None
+
+    # enrich payload with processing metadata for audit/replay
+    enriched_payload = dict(payload)
+    enriched_payload["_ingestion"] = {
+        "provider_slug": "lob",
+        "signature_mode": signature_mode,
+        "request_headers": {k: v for k, v in request.headers.items()},
+        "request_id": req_id,
+    }
+    if piece_external_id:
+        enriched_payload["resource_id"] = str(piece_external_id)
+
+    log_event(
+        "webhook_received",
+        request_id=req_id,
+        provider_slug="lob",
+        event_type=normalized_event_type,
+        event_key=event_key,
+        signature_mode=signature_mode,
+        has_piece_id=bool(piece_external_id),
+    )
+
+    try:
+        _persist_event_or_raise_duplicate("lob", event_key, normalized_event_type, enriched_payload, org_id, company_id)
+        if piece_external_id:
+            _upsert_direct_mail_piece_from_lob_event(
+                piece_external_id=str(piece_external_id),
+                normalized_event_type=normalized_event_type,
+                payload=enriched_payload,
+                piece=piece,
+            )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_200_OK:
+            incr_metric("webhook.events.duplicate", provider_slug="lob")
+            log_event(
+                "webhook_duplicate_ignored",
+                request_id=req_id,
+                provider_slug="lob",
+                event_type=normalized_event_type,
+                event_key=event_key,
+            )
+            return {
+                "status": "duplicate_ignored",
+                "event_type": normalized_event_type,
+                "event_key": event_key,
+                "signature_mode": signature_mode,
+            }
+        incr_metric("webhook.events.failed", provider_slug="lob")
+        log_event(
+            "webhook_failed",
+            level=logging.WARNING,
+            request_id=req_id,
+            provider_slug="lob",
+            event_type=normalized_event_type,
+            event_key=event_key,
+            status_code=exc.status_code,
+            detail=exc.detail,
+        )
+        raise
+    except Exception as exc:
+        incr_metric("webhook.events.failed", provider_slug="lob")
+        log_event(
+            "webhook_failed",
+            level=logging.ERROR,
+            request_id=req_id,
+            provider_slug="lob",
+            event_type=normalized_event_type,
+            event_key=event_key,
+            error=str(exc),
+        )
+        # Persist failed envelope as dead_letter when possible.
+        try:
+            supabase.table("webhook_events").insert(
+                {
+                    "provider_slug": "lob",
+                    "event_key": f"{event_key}:failure",
+                    "event_type": normalized_event_type,
+                    "status": "failed",
+                    "replay_count": 0,
+                    "last_replay_at": None,
+                    "last_error": str(exc),
+                    "org_id": org_id,
+                    "company_id": company_id,
+                    "payload": enriched_payload,
+                    "processed_at": _now_iso(),
+                }
+            ).execute()
+        except Exception:
+            pass
+        return {
+            "status": "failed_recorded",
+            "event_type": normalized_event_type,
+            "event_key": event_key,
+            "signature_mode": signature_mode,
+        }
+
+    incr_metric("webhook.events.processed", provider_slug="lob")
+    log_event(
+        "webhook_processed",
+        request_id=req_id,
+        provider_slug="lob",
+        event_type=normalized_event_type,
+        event_key=event_key,
+        signature_mode=signature_mode,
+        piece_found=bool(piece),
+    )
+    return {
+        "status": "processed",
+        "event_type": normalized_event_type,
+        "event_key": event_key,
+        "signature_mode": signature_mode,
+    }
+
+
 @router.get("/events", response_model=list[WebhookEventListItem])
 async def list_webhook_events(
     provider_slug: str | None = None,
@@ -529,7 +828,7 @@ async def list_webhook_events(
     offset: int = 0,
     _ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
-    if provider_slug and provider_slug not in {"smartlead", "heyreach"}:
+    if provider_slug and provider_slug not in {"smartlead", "heyreach", "lob"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported provider")
     bounded_limit = max(1, min(limit, 200))
     bounded_offset = max(0, offset)
@@ -569,7 +868,7 @@ async def replay_webhook_event(
     request: Request,
     _ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
-    if provider_slug not in {"smartlead", "heyreach"}:
+    if provider_slug not in {"smartlead", "heyreach", "lob"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported provider")
     event_row = _get_webhook_event(provider_slug, event_key)
     if not event_row:

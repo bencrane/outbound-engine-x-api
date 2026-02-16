@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from src.auth import AuthContext, get_current_auth
 from src.config import settings
@@ -31,6 +32,7 @@ from src.providers.lob.client import (
     verify_address_us_bulk as lob_verify_address_us_bulk,
     verify_address_us_single as lob_verify_address_us_single,
 )
+from src.observability import incr_metric, log_event
 
 
 router = APIRouter(prefix="/api/direct-mail", tags=["direct-mail"])
@@ -53,14 +55,45 @@ def _parse_datetime(value: Any) -> datetime | None:
     return None
 
 
-def _raise_provider_http_error(operation: str, exc: LobProviderError) -> None:
+def _request_id(request: Request | None) -> str | None:
+    if not request:
+        return None
+    return getattr(getattr(request, "state", None), "request_id", None)
+
+
+def _raise_provider_http_error(operation: str, exc: LobProviderError, request_id: str | None = None) -> None:
+    incr_metric(
+        "direct_mail.requests.failed",
+        operation=operation,
+        provider="lob",
+        category=exc.category,
+        retryable=exc.retryable,
+    )
+    log_event(
+        "direct_mail_operation_failed",
+        level=logging.WARNING,
+        request_id=request_id,
+        operation=operation,
+        provider="lob",
+        category=exc.category,
+        retryable=exc.retryable,
+        error=str(exc),
+    )
     raise HTTPException(
         status_code=provider_error_http_status(exc),
         detail=provider_error_detail(provider="lob", operation=operation, exc=exc),
     ) from exc
 
 
-def _provider_not_implemented_for_capability(provider_slug: str) -> HTTPException:
+def _provider_not_implemented_for_capability(provider_slug: str, *, operation: str, request_id: str | None) -> HTTPException:
+    incr_metric("direct_mail.requests.failed", operation=operation, provider=provider_slug, category="not_implemented")
+    log_event(
+        "direct_mail_provider_not_implemented",
+        level=logging.WARNING,
+        request_id=request_id,
+        operation=operation,
+        provider=provider_slug,
+    )
     return HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail={
@@ -70,6 +103,11 @@ def _provider_not_implemented_for_capability(provider_slug: str) -> HTTPExceptio
             "message": f"direct_mail workflows are not implemented for provider: {provider_slug}",
         },
     )
+
+
+def _ensure_lob_provider(provider_slug: str, *, operation: str, request_id: str | None) -> None:
+    if provider_slug != "lob":
+        raise _provider_not_implemented_for_capability(provider_slug, operation=operation, request_id=request_id)
 
 
 def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
@@ -274,15 +312,17 @@ def _piece_row_to_response(row: dict[str, Any]) -> DirectMailPieceResponse:
 @router.post("/verify-address/us", response_model=DirectMailAddressVerificationResponse)
 async def verify_address_us(
     data: DirectMailAddressVerificationUSRequest,
+    request: Request,
     company_id: str | None = Query(None),
     auth: AuthContext = Depends(get_current_auth),
 ):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="verify_address_us", provider="lob")
     resolved_company_id = _resolve_company_id(auth, company_id)
     _get_company(auth, resolved_company_id)
     entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
     provider = _get_provider_by_id(entitlement["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="verify_address_us", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -292,9 +332,18 @@ async def verify_address_us(
             payload=data.payload,
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("verify_address_us", exc)
+        _raise_provider_http_error("verify_address_us", exc, request_id=request_id)
 
     normalized = _normalize_verify_status(provider_payload)
+    incr_metric("direct_mail.requests.processed", operation="verify_address_us", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="verify_address_us",
+        provider="lob",
+        company_id=resolved_company_id,
+        normalized_status=normalized,
+    )
     return DirectMailAddressVerificationResponse(
         status=normalized,
         deliverability=normalized,
@@ -306,15 +355,17 @@ async def verify_address_us(
 @router.post("/verify-address/us/bulk", response_model=list[DirectMailAddressVerificationResponse])
 async def verify_address_us_bulk(
     data: DirectMailAddressVerificationUSBulkRequest,
+    request: Request,
     company_id: str | None = Query(None),
     auth: AuthContext = Depends(get_current_auth),
 ):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="verify_address_us_bulk", provider="lob")
     resolved_company_id = _resolve_company_id(auth, company_id)
     _get_company(auth, resolved_company_id)
     entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
     provider = _get_provider_by_id(entitlement["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="verify_address_us_bulk", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -324,7 +375,7 @@ async def verify_address_us_bulk(
             payload=data.payload,
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("verify_address_us_bulk", exc)
+        _raise_provider_http_error("verify_address_us_bulk", exc, request_id=request_id)
 
     rows = _extract_piece_list_payload(provider_payload)
     if not rows and isinstance(provider_payload.get("addresses"), list):
@@ -332,7 +383,7 @@ async def verify_address_us_bulk(
     if not rows and isinstance(provider_payload, dict):
         rows = [provider_payload]
 
-    return [
+    normalized_rows = [
         DirectMailAddressVerificationResponse(
             status=_normalize_verify_status(row),
             deliverability=_normalize_verify_status(row),
@@ -341,19 +392,31 @@ async def verify_address_us_bulk(
         )
         for row in rows
     ]
+    incr_metric("direct_mail.requests.processed", operation="verify_address_us_bulk", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="verify_address_us_bulk",
+        provider="lob",
+        company_id=resolved_company_id,
+        result_count=len(normalized_rows),
+    )
+    return normalized_rows
 
 
 @router.post("/postcards", response_model=DirectMailPieceResponse, status_code=status.HTTP_201_CREATED)
 async def create_postcard(
     data: DirectMailPieceCreateRequest,
+    request: Request,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="create_postcard", provider="lob")
     resolved_company_id = _resolve_company_id(auth, data.company_id)
     _get_company(auth, resolved_company_id)
     entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
     provider = _get_provider_by_id(entitlement["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="create_postcard", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -365,7 +428,7 @@ async def create_postcard(
             idempotency_in_query=(data.idempotency_location == "query"),
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("create_postcard", exc)
+        _raise_provider_http_error("create_postcard", exc, request_id=request_id)
 
     if not provider_piece.get("id"):
         raise HTTPException(
@@ -381,20 +444,32 @@ async def create_postcard(
         provider_piece=provider_piece,
     )
     row = _get_piece_for_auth(auth, piece_id=str(provider_piece["id"]), piece_type="postcard")
+    incr_metric("direct_mail.requests.processed", operation="create_postcard", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="create_postcard",
+        provider="lob",
+        company_id=resolved_company_id,
+        piece_id=str(provider_piece["id"]),
+        status=row.get("status"),
+    )
     return _piece_row_to_response(row)
 
 
 @router.get("/postcards", response_model=DirectMailPieceListResponse)
 async def list_postcards(
+    request: Request,
     company_id: str | None = Query(None),
     auth: AuthContext = Depends(get_current_auth),
 ):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="list_postcards", provider="lob")
     resolved_company_id = _resolve_company_id(auth, company_id)
     _get_company(auth, resolved_company_id)
     entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
     provider = _get_provider_by_id(entitlement["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="list_postcards", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -404,7 +479,7 @@ async def list_postcards(
             params={"limit": 100},
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("list_postcards", exc)
+        _raise_provider_http_error("list_postcards", exc, request_id=request_id)
 
     for piece in _extract_piece_list_payload(provider_payload):
         _upsert_piece(
@@ -418,15 +493,30 @@ async def list_postcards(
     rows = supabase.table("company_direct_mail_pieces").select("*").eq(
         "org_id", auth.org_id
     ).eq("company_id", resolved_company_id).eq("piece_type", "postcard").is_("deleted_at", "null").execute().data or []
-    return DirectMailPieceListResponse(pieces=[_piece_row_to_response(row) for row in rows])
+    pieces = [_piece_row_to_response(row) for row in rows]
+    incr_metric("direct_mail.requests.processed", operation="list_postcards", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="list_postcards",
+        provider="lob",
+        company_id=resolved_company_id,
+        result_count=len(pieces),
+    )
+    return DirectMailPieceListResponse(pieces=pieces)
 
 
 @router.get("/postcards/{piece_id}", response_model=DirectMailPieceResponse)
-async def get_postcard(piece_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def get_postcard(
+    piece_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="get_postcard", provider="lob")
     row = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="postcard")
     provider = _get_provider_by_id(row["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="get_postcard", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -436,7 +526,7 @@ async def get_postcard(piece_id: str, auth: AuthContext = Depends(get_current_au
             postcard_id=piece_id,
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("get_postcard", exc)
+        _raise_provider_http_error("get_postcard", exc, request_id=request_id)
 
     _upsert_piece(
         org_id=auth.org_id,
@@ -445,15 +535,31 @@ async def get_postcard(piece_id: str, auth: AuthContext = Depends(get_current_au
         piece_type="postcard",
         provider_piece=provider_piece,
     )
-    return _piece_row_to_response(_get_piece_for_auth(auth, piece_id=piece_id, piece_type="postcard"))
+    response = _piece_row_to_response(_get_piece_for_auth(auth, piece_id=piece_id, piece_type="postcard"))
+    incr_metric("direct_mail.requests.processed", operation="get_postcard", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="get_postcard",
+        provider="lob",
+        company_id=row["company_id"],
+        piece_id=piece_id,
+        status=response.status,
+    )
+    return response
 
 
 @router.post("/postcards/{piece_id}/cancel", response_model=DirectMailPieceCancelResponse)
-async def cancel_postcard(piece_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def cancel_postcard(
+    piece_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="cancel_postcard", provider="lob")
     row = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="postcard")
     provider = _get_provider_by_id(row["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="cancel_postcard", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -463,7 +569,7 @@ async def cancel_postcard(piece_id: str, auth: AuthContext = Depends(get_current
             postcard_id=piece_id,
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("cancel_postcard", exc)
+        _raise_provider_http_error("cancel_postcard", exc, request_id=request_id)
 
     _upsert_piece(
         org_id=auth.org_id,
@@ -473,6 +579,16 @@ async def cancel_postcard(piece_id: str, auth: AuthContext = Depends(get_current
         provider_piece=provider_piece,
     )
     updated = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="postcard")
+    incr_metric("direct_mail.requests.processed", operation="cancel_postcard", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="cancel_postcard",
+        provider="lob",
+        company_id=row["company_id"],
+        piece_id=piece_id,
+        status=updated.get("status"),
+    )
     return DirectMailPieceCancelResponse(
         id=updated["external_piece_id"],
         type="postcard",
@@ -484,14 +600,16 @@ async def cancel_postcard(piece_id: str, auth: AuthContext = Depends(get_current
 @router.post("/letters", response_model=DirectMailPieceResponse, status_code=status.HTTP_201_CREATED)
 async def create_letter(
     data: DirectMailPieceCreateRequest,
+    request: Request,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="create_letter", provider="lob")
     resolved_company_id = _resolve_company_id(auth, data.company_id)
     _get_company(auth, resolved_company_id)
     entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
     provider = _get_provider_by_id(entitlement["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="create_letter", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -503,7 +621,7 @@ async def create_letter(
             idempotency_in_query=(data.idempotency_location == "query"),
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("create_letter", exc)
+        _raise_provider_http_error("create_letter", exc, request_id=request_id)
 
     if not provider_piece.get("id"):
         raise HTTPException(
@@ -519,20 +637,32 @@ async def create_letter(
         provider_piece=provider_piece,
     )
     row = _get_piece_for_auth(auth, piece_id=str(provider_piece["id"]), piece_type="letter")
+    incr_metric("direct_mail.requests.processed", operation="create_letter", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="create_letter",
+        provider="lob",
+        company_id=resolved_company_id,
+        piece_id=str(provider_piece["id"]),
+        status=row.get("status"),
+    )
     return _piece_row_to_response(row)
 
 
 @router.get("/letters", response_model=DirectMailPieceListResponse)
 async def list_letters(
+    request: Request,
     company_id: str | None = Query(None),
     auth: AuthContext = Depends(get_current_auth),
 ):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="list_letters", provider="lob")
     resolved_company_id = _resolve_company_id(auth, company_id)
     _get_company(auth, resolved_company_id)
     entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
     provider = _get_provider_by_id(entitlement["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="list_letters", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -542,7 +672,7 @@ async def list_letters(
             params={"limit": 100},
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("list_letters", exc)
+        _raise_provider_http_error("list_letters", exc, request_id=request_id)
 
     for piece in _extract_piece_list_payload(provider_payload):
         _upsert_piece(
@@ -556,15 +686,30 @@ async def list_letters(
     rows = supabase.table("company_direct_mail_pieces").select("*").eq(
         "org_id", auth.org_id
     ).eq("company_id", resolved_company_id).eq("piece_type", "letter").is_("deleted_at", "null").execute().data or []
-    return DirectMailPieceListResponse(pieces=[_piece_row_to_response(row) for row in rows])
+    pieces = [_piece_row_to_response(row) for row in rows]
+    incr_metric("direct_mail.requests.processed", operation="list_letters", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="list_letters",
+        provider="lob",
+        company_id=resolved_company_id,
+        result_count=len(pieces),
+    )
+    return DirectMailPieceListResponse(pieces=pieces)
 
 
 @router.get("/letters/{piece_id}", response_model=DirectMailPieceResponse)
-async def get_letter(piece_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def get_letter(
+    piece_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="get_letter", provider="lob")
     row = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="letter")
     provider = _get_provider_by_id(row["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="get_letter", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -574,7 +719,7 @@ async def get_letter(piece_id: str, auth: AuthContext = Depends(get_current_auth
             letter_id=piece_id,
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("get_letter", exc)
+        _raise_provider_http_error("get_letter", exc, request_id=request_id)
 
     _upsert_piece(
         org_id=auth.org_id,
@@ -583,15 +728,31 @@ async def get_letter(piece_id: str, auth: AuthContext = Depends(get_current_auth
         piece_type="letter",
         provider_piece=provider_piece,
     )
-    return _piece_row_to_response(_get_piece_for_auth(auth, piece_id=piece_id, piece_type="letter"))
+    response = _piece_row_to_response(_get_piece_for_auth(auth, piece_id=piece_id, piece_type="letter"))
+    incr_metric("direct_mail.requests.processed", operation="get_letter", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="get_letter",
+        provider="lob",
+        company_id=row["company_id"],
+        piece_id=piece_id,
+        status=response.status,
+    )
+    return response
 
 
 @router.post("/letters/{piece_id}/cancel", response_model=DirectMailPieceCancelResponse)
-async def cancel_letter(piece_id: str, auth: AuthContext = Depends(get_current_auth)):
+async def cancel_letter(
+    piece_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="cancel_letter", provider="lob")
     row = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="letter")
     provider = _get_provider_by_id(row["provider_id"])
-    if provider["slug"] != "lob":
-        raise _provider_not_implemented_for_capability(provider["slug"])
+    _ensure_lob_provider(provider["slug"], operation="cancel_letter", request_id=request_id)
     creds = _get_org_provider_config(auth.org_id, "lob")
 
     try:
@@ -601,7 +762,7 @@ async def cancel_letter(piece_id: str, auth: AuthContext = Depends(get_current_a
             letter_id=piece_id,
         )
     except LobProviderError as exc:
-        _raise_provider_http_error("cancel_letter", exc)
+        _raise_provider_http_error("cancel_letter", exc, request_id=request_id)
 
     _upsert_piece(
         org_id=auth.org_id,
@@ -611,6 +772,16 @@ async def cancel_letter(piece_id: str, auth: AuthContext = Depends(get_current_a
         provider_piece=provider_piece,
     )
     updated = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="letter")
+    incr_metric("direct_mail.requests.processed", operation="cancel_letter", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="cancel_letter",
+        provider="lob",
+        company_id=row["company_id"],
+        piece_id=piece_id,
+        status=updated.get("status"),
+    )
     return DirectMailPieceCancelResponse(
         id=updated["external_piece_id"],
         type="letter",

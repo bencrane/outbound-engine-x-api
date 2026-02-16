@@ -512,3 +512,145 @@ def test_replay_webhook_events_by_query(monkeypatch):
     evt2 = next(row for row in fake_db.tables["webhook_events"] if row["event_key"] == "evt-2")
     assert evt2["replay_count"] == 1
     _clear_overrides()
+
+
+def test_lob_webhook_happy_path_projects_piece_status(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "providers": [{"id": "prov-lob", "slug": "lob"}],
+            "webhook_events": [],
+            "company_direct_mail_pieces": [
+                {
+                    "id": "piece-row-1",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_id": "prov-lob",
+                    "external_piece_id": "psc_123",
+                    "piece_type": "postcard",
+                    "status": "queued",
+                    "deleted_at": None,
+                    "updated_at": _ts(),
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    client = TestClient(app)
+
+    payload = {
+        "id": "evt_lob_1",
+        "type": "postcard.delivered",
+        "date_created": "2026-02-16T00:00:00Z",
+        "body": {"resource": {"id": "psc_123", "object": "postcard", "metadata": {"job": "a"}}},
+    }
+    response = client.post("/api/webhooks/lob", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "processed"
+    assert body["event_type"] == "piece.delivered"
+    assert body["signature_mode"] == "disabled_pending_contract"
+
+    piece = fake_db.tables["company_direct_mail_pieces"][0]
+    assert piece["status"] == "delivered"
+    assert len(fake_db.tables["webhook_events"]) == 1
+    assert fake_db.tables["webhook_events"][0]["event_type"] == "piece.delivered"
+
+
+def test_lob_webhook_duplicate_is_idempotent(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "providers": [{"id": "prov-lob", "slug": "lob"}],
+            "webhook_events": [],
+            "company_direct_mail_pieces": [
+                {
+                    "id": "piece-row-1",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_id": "prov-lob",
+                    "external_piece_id": "psc_123",
+                    "piece_type": "postcard",
+                    "status": "queued",
+                    "deleted_at": None,
+                    "updated_at": _ts(),
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    client = TestClient(app)
+
+    payload = {
+        "id": "evt_lob_dup",
+        "type": "postcard.processed",
+        "date_created": "2026-02-16T00:00:00Z",
+        "body": {"resource": {"id": "psc_123", "object": "postcard"}},
+    }
+    first = client.post("/api/webhooks/lob", json=payload)
+    second = client.post("/api/webhooks/lob", json=payload)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["status"] == "duplicate_ignored"
+    assert len(fake_db.tables["webhook_events"]) == 1
+    assert fake_db.tables["company_direct_mail_pieces"][0]["status"] == "ready_for_mail"
+
+
+def test_lob_webhook_malformed_payload_handled_non_crashing(monkeypatch):
+    fake_db = FakeSupabase({"providers": [{"id": "prov-lob", "slug": "lob"}], "webhook_events": [], "company_direct_mail_pieces": []})
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    client = TestClient(app)
+
+    response = client.post("/api/webhooks/lob", data="{invalid-json", headers={"Content-Type": "application/json"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "processed"
+    assert body["event_type"] == "piece.unknown"
+    assert body["signature_mode"] == "disabled_pending_contract"
+    assert len(fake_db.tables["webhook_events"]) == 1
+    assert fake_db.tables["webhook_events"][0]["payload"]["malformed_json"] is True
+
+
+def test_lob_replay_reprojects_piece_status(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "providers": [{"id": "prov-lob", "slug": "lob"}],
+            "webhook_events": [
+                {
+                    "id": "evt-row-lob-1",
+                    "provider_slug": "lob",
+                    "event_key": "lob:evt-1",
+                    "event_type": "piece.in_transit",
+                    "replay_count": 0,
+                    "payload": {
+                        "id": "evt-1",
+                        "type": "postcard.in_transit",
+                        "resource_id": "psc_123",
+                        "body": {"resource": {"id": "psc_123", "object": "postcard"}},
+                    },
+                }
+            ],
+            "company_direct_mail_pieces": [
+                {
+                    "id": "piece-row-1",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_id": "prov-lob",
+                    "external_piece_id": "psc_123",
+                    "piece_type": "postcard",
+                    "status": "queued",
+                    "deleted_at": None,
+                    "updated_at": _ts(),
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    _set_super_admin()
+    client = TestClient(app)
+
+    replay = client.post("/api/webhooks/replay/lob/lob:evt-1")
+    assert replay.status_code == 200
+    assert replay.json()["status"] == "replayed"
+    assert replay.json()["provider_slug"] == "lob"
+    assert fake_db.tables["company_direct_mail_pieces"][0]["status"] == "in_transit"
+    assert fake_db.tables["webhook_events"][0]["replay_count"] == 1
+    _clear_overrides()
