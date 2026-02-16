@@ -447,6 +447,53 @@ def test_add_campaign_leads_emailbison(monkeypatch):
     _clear()
 
 
+def test_add_campaign_leads_emailbison_skips_malformed_provider_payload(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "321",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    tables["company_campaign_leads"] = []
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_create_lead",
+        lambda **kwargs: {"id": 9001, "email": kwargs["lead"]["email"], "first_name": kwargs["lead"].get("first_name"), "status": "verified"},
+    )
+    monkeypatch.setattr(campaigns_router, "emailbison_attach_leads_to_campaign", lambda **kwargs: {"success": True})
+    # Missing `id` in returned provider lead means it cannot be normalized/upserted.
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_list_campaign_leads",
+        lambda **kwargs: [{"email": "lead@example.com", "first_name": "Lead", "status": "verified"}],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    add_response = client.post(
+        "/api/campaigns/cmp-1/leads",
+        json={"leads": [{"email": "lead@example.com", "first_name": "Lead"}]},
+    )
+    assert add_response.status_code == 200
+    assert add_response.json()["affected"] == 0
+
+    _clear()
+
+
 def test_pause_resume_unsubscribe_campaign_lead(monkeypatch):
     tables = _base_tables()
     tables["company_campaigns"] = [
@@ -646,6 +693,44 @@ def test_list_campaign_replies_dispatches_to_emailbison(monkeypatch):
     assert len(data) == 1
     assert data[0]["direction"] == "inbound"
     assert data[0]["subject"] == "Re: hello"
+
+    _clear()
+
+
+def test_list_campaign_replies_skips_malformed_provider_payload(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "321",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    tables["company_campaign_messages"] = []
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    # Missing message `id` means normalization extractor will drop this payload.
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_list_replies",
+        lambda **kwargs: [{"subject": "Re: hello", "body": "reply", "lead_id": 9001}],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-1/replies")
+    assert response.status_code == 200
+    assert response.json() == []
 
     _clear()
 
@@ -1024,6 +1109,62 @@ def test_campaign_org_admin_can_list_all_companies(monkeypatch):
     _clear()
 
 
+def test_campaign_org_admin_cannot_combine_all_companies_and_company_id(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/?all_companies=true&company_id=c-1")
+    assert response.status_code == 400
+    assert "cannot be combined with all_companies=true" in response.json()["detail"]
+    _clear()
+
+
+def test_campaign_org_admin_can_list_single_company_scope(monkeypatch):
+    tables = _base_tables()
+    tables["companies"].append({"id": "c-2", "org_id": "org-1", "deleted_at": None})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "101",
+            "name": "C1 Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+        {
+            "id": "cmp-2",
+            "org_id": "org-1",
+            "company_id": "c-2",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "102",
+            "name": "C2 Campaign",
+            "status": "PAUSED",
+            "created_by_user_id": "u-2",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/?company_id=c-1")
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["company_id"] == "c-1"
+    _clear()
+
+
 def test_campaign_company_scoped_user_cannot_use_all_companies(monkeypatch):
     fake_db = FakeSupabase(_base_tables())
     monkeypatch.setattr(campaigns_router, "supabase", fake_db)
@@ -1151,4 +1292,16 @@ def test_campaign_messages_feed_org_admin_all_companies(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["company_id"] == "c-1"
     assert rows[0]["direction"] == "inbound"
+    _clear()
+
+
+def test_campaign_messages_feed_company_user_cannot_use_all_companies(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/messages?all_companies=true")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "All-companies view is admin only"
     _clear()
