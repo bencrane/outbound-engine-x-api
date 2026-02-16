@@ -543,6 +543,7 @@ def test_workspace_account_settings_and_stats_endpoints(monkeypatch):
 
 def test_contract_status_registry_for_blocked_contract_missing_gaps():
     registry = emailbison_client.EMAILBISON_CONTRACT_STATUS_REGISTRY
+    assert registry["webhooks.signature_verification"]["status"] == "provider_not_supported"
     assert registry["custom_variables.update"]["status"] == "blocked_contract_missing"
     assert registry["custom_variables.delete"]["status"] == "blocked_contract_missing"
     assert registry["tags.update"]["status"] == "blocked_contract_missing"

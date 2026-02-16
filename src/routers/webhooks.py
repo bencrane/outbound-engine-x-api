@@ -1294,7 +1294,7 @@ async def ingest_emailbison_webhook_without_path_token():
     )
 
 
-@router.post("/emailbison/{path_token}")
+@router.post("/emailbison/{path_token}", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_emailbison_webhook(
     path_token: str,
     request: Request,

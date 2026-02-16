@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hmac
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -15,9 +15,17 @@ from src.domain.normalization import (
     normalize_message_direction,
 )
 from src.models.reconciliation import (
+    EmailBisonWebhookBackfillRequest,
+    EmailBisonWebhookBackfillResponse,
     ReconciliationProviderStats,
     ReconciliationRunRequest,
     ReconciliationRunResponse,
+)
+from src.providers.emailbison.client import (
+    EmailBisonProviderError,
+    list_campaign_leads as emailbison_get_campaign_leads,
+    list_campaign_replies as emailbison_get_campaign_replies,
+    list_campaigns as emailbison_list_campaigns,
 )
 from src.observability import incr_metric, log_event, persist_metrics_snapshot
 from src.providers.heyreach.client import (
@@ -230,6 +238,232 @@ def _update_campaign_message_sync_state(
     )
 
 
+def _parse_iso_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _run_emailbison_webhook_backfill(
+    data: EmailBisonWebhookBackfillRequest,
+    *,
+    request_id: str | None = None,
+) -> EmailBisonWebhookBackfillResponse:
+    started_at = _now_utc()
+    cursor_end = started_at
+    cursor_start = data.cursor_ts or (cursor_end - timedelta(hours=data.lookback_hours))
+    provider_id = (
+        supabase.table("providers")
+        .select("id")
+        .eq("slug", "emailbison")
+        .execute()
+        .data
+    )
+    if not provider_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Provider not configured: emailbison",
+        )
+    emailbison_provider_id = provider_id[0]["id"]
+    campaigns_query = (
+        supabase.table("company_campaigns")
+        .select("id, org_id, company_id, provider_id, external_campaign_id, status, updated_at")
+        .eq("provider_id", emailbison_provider_id)
+        .is_("deleted_at", "null")
+    )
+    if data.org_id:
+        campaigns_query = campaigns_query.eq("org_id", data.org_id)
+    if data.company_id:
+        campaigns_query = campaigns_query.eq("company_id", data.company_id)
+    campaign_rows = campaigns_query.execute().data or []
+    scoped_campaign_rows = []
+    for row in campaign_rows:
+        updated_at = _parse_iso_ts(row.get("updated_at"))
+        if updated_at is not None and updated_at < cursor_start:
+            continue
+        scoped_campaign_rows.append(row)
+    scoped_campaign_rows = sorted(
+        scoped_campaign_rows,
+        key=lambda row: row.get("updated_at") or "",
+        reverse=True,
+    )[: data.campaign_limit]
+
+    campaigns_updated = 0
+    leads_updated = 0
+    messages_upserted = 0
+    errors: list[str] = []
+    notes = [
+        "EmailBison webhook reconciliation runs in eventual-consistency mode.",
+        "Backfill cursor strategy: explicit cursor_ts if provided, otherwise now - lookback_hours.",
+    ]
+    api_key_cache: dict[str, str] = {}
+    remote_campaign_status_cache: dict[str, dict[str, str]] = {}
+
+    for campaign in scoped_campaign_rows:
+        org_id = campaign["org_id"]
+        company_id = campaign["company_id"]
+        external_campaign_id = campaign.get("external_campaign_id")
+        if not external_campaign_id:
+            continue
+        cache_key = f"{org_id}:{company_id}"
+        api_key = api_key_cache.get(cache_key)
+        if api_key is None:
+            api_key = _get_org_provider_api_key(org_id, "emailbison")
+            if not api_key:
+                errors.append(f"emailbison:{org_id}:{company_id}: missing org api key")
+                continue
+            api_key_cache[cache_key] = api_key
+        if cache_key not in remote_campaign_status_cache:
+            try:
+                remote_campaigns = emailbison_list_campaigns(api_key=api_key)
+            except EmailBisonProviderError as exc:
+                errors.append(f"emailbison:{org_id}:{company_id}: campaign fetch failed [{_provider_error_category(exc)}]: {exc}")
+                continue
+            remote_campaign_status_cache[cache_key] = {
+                str(item.get("id")): normalize_campaign_status(item.get("status"))
+                for item in remote_campaigns
+                if item.get("id") is not None
+            }
+
+        remote_status = remote_campaign_status_cache[cache_key].get(str(external_campaign_id))
+        if remote_status and campaign.get("status") != remote_status:
+            campaigns_updated += 1
+            if not data.dry_run:
+                (
+                    supabase.table("company_campaigns")
+                    .update(
+                        {
+                            "status": remote_status,
+                            "updated_at": _now_iso(),
+                        }
+                    )
+                    .eq("id", campaign["id"])
+                    .eq("org_id", org_id)
+                    .execute()
+                )
+
+        try:
+            remote_leads = emailbison_get_campaign_leads(api_key=api_key, campaign_id=external_campaign_id)
+        except EmailBisonProviderError as exc:
+            errors.append(
+                f"emailbison:{org_id}:{company_id}:{external_campaign_id}: lead fetch failed [{_provider_error_category(exc)}]: {exc}"
+            )
+            continue
+        local_leads = (
+            supabase.table("company_campaign_leads")
+            .select("id, external_lead_id, status")
+            .eq("org_id", org_id)
+            .eq("company_campaign_id", campaign["id"])
+            .eq("provider_id", emailbison_provider_id)
+            .is_("deleted_at", "null")
+            .execute()
+            .data
+            or []
+        )
+        local_lead_by_external = {str(row.get("external_lead_id")): row for row in local_leads}
+        local_lead_id_by_external: dict[str, str] = {}
+        for remote_lead in remote_leads:
+            parsed_lead = _extract_lead(remote_lead)
+            if not parsed_lead:
+                continue
+            local_lead = local_lead_by_external.get(parsed_lead["external_lead_id"])
+            if local_lead:
+                local_lead_id_by_external[parsed_lead["external_lead_id"]] = local_lead["id"]
+                normalized_status = parsed_lead["status"]
+                if local_lead.get("status") != normalized_status:
+                    leads_updated += 1
+                    if not data.dry_run:
+                        (
+                            supabase.table("company_campaign_leads")
+                            .update(
+                                {
+                                    "status": normalized_status,
+                                    "raw_payload": parsed_lead["raw_payload"],
+                                    "updated_at": _now_iso(),
+                                }
+                            )
+                            .eq("id", local_lead["id"])
+                            .eq("org_id", org_id)
+                            .execute()
+                        )
+            elif not data.dry_run:
+                created = (
+                    supabase.table("company_campaign_leads")
+                    .insert(
+                        {
+                            "org_id": org_id,
+                            "company_id": company_id,
+                            "company_campaign_id": campaign["id"],
+                            "provider_id": emailbison_provider_id,
+                            "external_lead_id": parsed_lead["external_lead_id"],
+                            "email": parsed_lead["email"],
+                            "first_name": parsed_lead["first_name"],
+                            "last_name": parsed_lead["last_name"],
+                            "company_name": parsed_lead["company_name"],
+                            "title": parsed_lead["title"],
+                            "status": parsed_lead["status"],
+                            "raw_payload": parsed_lead["raw_payload"],
+                            "updated_at": _now_iso(),
+                        }
+                    )
+                    .execute()
+                )
+                if created.data:
+                    local_lead_id_by_external[parsed_lead["external_lead_id"]] = created.data[0]["id"]
+
+        try:
+            remote_replies = emailbison_get_campaign_replies(api_key=api_key, campaign_id=external_campaign_id)
+        except EmailBisonProviderError as exc:
+            errors.append(
+                f"emailbison:{org_id}:{company_id}:{external_campaign_id}: replies fetch failed [{_provider_error_category(exc)}]: {exc}"
+            )
+            continue
+        for reply in remote_replies:
+            parsed_message = _extract_message(reply, default_direction="inbound")
+            if not parsed_message:
+                continue
+            result = _upsert_campaign_message(
+                dry_run=data.dry_run,
+                org_id=org_id,
+                company_id=company_id,
+                campaign_id=campaign["id"],
+                provider_id=emailbison_provider_id,
+                local_lead_id=local_lead_id_by_external.get(parsed_message.get("external_lead_id") or ""),
+                parsed=parsed_message,
+            )
+            if result in {"created", "updated"}:
+                messages_upserted += 1
+
+    log_event(
+        "emailbison_webhook_backfill_completed",
+        request_id=request_id,
+        dry_run=data.dry_run,
+        cursor_start=cursor_start.isoformat(),
+        cursor_end=cursor_end.isoformat(),
+        campaigns_scanned=len(scoped_campaign_rows),
+        campaigns_updated=campaigns_updated,
+        leads_updated=leads_updated,
+        messages_upserted=messages_upserted,
+        error_count=len(errors),
+    )
+    return EmailBisonWebhookBackfillResponse(
+        dry_run=data.dry_run,
+        started_at=started_at,
+        finished_at=_now_utc(),
+        cursor_start=cursor_start,
+        cursor_end=cursor_end,
+        campaigns_scanned=len(scoped_campaign_rows),
+        campaigns_updated=campaigns_updated,
+        leads_updated=leads_updated,
+        messages_upserted=messages_upserted,
+        errors=errors,
+        notes=notes,
+    )
+
+
 @router.post("/campaigns-leads", response_model=ReconciliationRunResponse)
 async def reconcile_campaigns_and_leads(
     data: ReconciliationRunRequest,
@@ -238,6 +472,16 @@ async def reconcile_campaigns_and_leads(
 ):
     request_id = getattr(request.state, "request_id", None)
     return _run_reconciliation(data, request_id=request_id)
+
+
+@router.post("/emailbison-backfill", response_model=EmailBisonWebhookBackfillResponse)
+async def reconcile_emailbison_webhook_backfill(
+    data: EmailBisonWebhookBackfillRequest,
+    request: Request,
+    _ctx: SuperAdminContext = Depends(get_current_super_admin),
+):
+    request_id = getattr(request.state, "request_id", None)
+    return _run_emailbison_webhook_backfill(data, request_id=request_id)
 
 
 def _run_reconciliation(data: ReconciliationRunRequest, request_id: str | None = None) -> ReconciliationRunResponse:
@@ -315,10 +559,12 @@ def _run_reconciliation(data: ReconciliationRunRequest, request_id: str | None =
                             for row in campaigns
                             if row.get("client_id") is None or str(row.get("client_id")) == str(smartlead_client_id)
                         ]
+                elif provider_slug == "emailbison":
+                    campaigns = emailbison_list_campaigns(api_key=api_key)[: data.campaign_limit]
                 else:
                     campaigns = heyreach_list_campaigns(api_key=api_key)
                     campaigns = campaigns[: data.campaign_limit]
-            except (SmartleadProviderError, HeyReachProviderError) as exc:
+            except (SmartleadProviderError, HeyReachProviderError, EmailBisonProviderError) as exc:
                 category = _provider_error_category(exc)
                 stats.errors.append(f"{provider_slug}:{org_id}:{company_id}: campaign fetch failed [{category}]: {exc}")
                 incr_metric(
@@ -400,6 +646,11 @@ def _run_reconciliation(data: ReconciliationRunRequest, request_id: str | None =
                             limit=data.lead_limit,
                             offset=0,
                         )
+                    elif provider_slug == "emailbison":
+                        leads = emailbison_get_campaign_leads(
+                            api_key=api_key,
+                            campaign_id=parsed_campaign["external_campaign_id"],
+                        )
                     else:
                         leads = heyreach_get_campaign_leads(
                             api_key=api_key,
@@ -407,7 +658,7 @@ def _run_reconciliation(data: ReconciliationRunRequest, request_id: str | None =
                             page=1,
                             limit=min(data.lead_limit, 1000),
                         )
-                except (SmartleadProviderError, HeyReachProviderError) as exc:
+                except (SmartleadProviderError, HeyReachProviderError, EmailBisonProviderError) as exc:
                     category = _provider_error_category(exc)
                     stats.errors.append(
                         f"{provider_slug}:{org_id}:{company_id}:{parsed_campaign['external_campaign_id']}: lead fetch failed [{category}]: {exc}"
@@ -692,6 +943,9 @@ def _run_reconciliation(data: ReconciliationRunRequest, request_id: str | None =
                             f"{provider_slug}:{org_id}:{company_id}: invalid heyreach_message_sync_mode={settings.heyreach_message_sync_mode}"
                         )
                         incr_metric("reconciliation.provider_errors", provider_slug=provider_slug, error_type="config")
+                elif data.sync_messages and provider_slug == "emailbison":
+                    campaign_message_sync_status = "skipped_webhook_only"
+                    incr_metric("reconciliation.messages.skipped", provider_slug="emailbison", mode="webhook_only")
                 _update_campaign_message_sync_state(
                     dry_run=data.dry_run,
                     org_id=org_id,
@@ -770,3 +1024,30 @@ async def run_reconciliation_scheduled(
         )
     incr_metric("reconciliation.scheduled.auth_succeeded")
     return _run_reconciliation(data, request_id=request_id)
+
+
+@router.post("/emailbison-backfill/run-scheduled", response_model=EmailBisonWebhookBackfillResponse)
+async def run_emailbison_backfill_scheduled(
+    data: EmailBisonWebhookBackfillRequest,
+    request: Request,
+    x_internal_scheduler_secret: str | None = Header(default=None),
+):
+    request_id = getattr(request.state, "request_id", None)
+    configured_secret = settings.internal_scheduler_secret
+    if not configured_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="internal scheduler secret is not configured",
+        )
+    if not x_internal_scheduler_secret or not hmac.compare_digest(
+        x_internal_scheduler_secret,
+        configured_secret,
+    ):
+        incr_metric("reconciliation.scheduled.auth_failed")
+        log_event("emailbison_backfill_scheduled_auth_failed", request_id=request_id)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid scheduler secret",
+        )
+    incr_metric("reconciliation.scheduled.auth_succeeded")
+    return _run_emailbison_webhook_backfill(data, request_id=request_id)

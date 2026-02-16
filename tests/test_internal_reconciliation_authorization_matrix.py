@@ -22,12 +22,30 @@ def test_reconciliation_internal_endpoint_requires_super_admin():
     assert response.status_code == 401
 
 
+def test_emailbison_backfill_internal_endpoint_requires_super_admin():
+    client = TestClient(app)
+    response = client.post("/api/internal/reconciliation/emailbison-backfill", json={"dry_run": True})
+    assert response.status_code == 401
+
+
 def test_scheduler_endpoint_rejects_missing_secret_when_configured(monkeypatch):
     monkeypatch.setattr(reconciliation_router.settings, "internal_scheduler_secret", "sched-secret")
     client = TestClient(app)
 
     response = client.post(
         "/api/internal/reconciliation/run-scheduled",
+        json={"dry_run": True},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "invalid scheduler secret"
+
+
+def test_emailbison_backfill_scheduler_rejects_missing_secret_when_configured(monkeypatch):
+    monkeypatch.setattr(reconciliation_router.settings, "internal_scheduler_secret", "sched-secret")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/internal/reconciliation/emailbison-backfill/run-scheduled",
         json={"dry_run": True},
     )
     assert response.status_code == 401
@@ -53,6 +71,18 @@ def test_scheduler_endpoint_returns_503_when_scheduler_secret_not_configured(mon
 
     response = client.post(
         "/api/internal/reconciliation/run-scheduled",
+        json={"dry_run": True},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "internal scheduler secret is not configured"
+
+
+def test_emailbison_backfill_scheduler_returns_503_when_scheduler_secret_not_configured(monkeypatch):
+    monkeypatch.setattr(reconciliation_router.settings, "internal_scheduler_secret", None)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/internal/reconciliation/emailbison-backfill/run-scheduled",
         json={"dry_run": True},
     )
     assert response.status_code == 503

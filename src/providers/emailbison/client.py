@@ -2001,6 +2001,10 @@ EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
 
 
 EMAILBISON_CONTRACT_STATUS_REGISTRY: dict[str, dict[str, str]] = {
+    "webhooks.signature_verification": {
+        "status": "provider_not_supported",
+        "evidence": "EmailBison support confirms no custom webhook signature headers/HMAC contract currently exists; authenticity is origin/path-token based only.",
+    },
     "custom_variables.update": {
         "status": "blocked_contract_missing",
         "evidence": "Live user-emailbison API spec output currently surfaces GET/POST /api/custom-variables only; no update endpoint found.",

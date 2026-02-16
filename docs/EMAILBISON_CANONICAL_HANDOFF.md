@@ -1,6 +1,6 @@
 # EmailBison Canonical Handoff
 
-Generated: `2026-02-16T07:30:00Z` (UTC)
+Generated: `2026-02-15T23:59:00Z` (UTC)
 
 ## Canonical Source + Naming Caveat
 
@@ -179,15 +179,14 @@ Confidence rubric:
 - **Key response fields**
   - `id`, `name`, `url`, `events[]`, `created_at`, `updated_at`
 - **Known caveats/inconsistencies**
-  - Event list includes many event types (delivery/reply/account/tag/warmup), but API spec lookup does not expose inbound signature verification mechanics for receiving webhooks on your side.
+  - Event list includes many event types (delivery/reply/account/tag/warmup), and support confirms inbound webhook authenticity is currently unsigned.
   - MCP discovery shows additional webhook helper tools (`get_webhook_event_types`, `get_sample_webhook_payload`, `send_test_webhook_event`) that should be queried during implementation hardening.
-  - **Inbound webhook signature contract (live-source verification, current state):**
-    - `header name`: **not documented** in `user-emailbison` resources/spec.
-    - `algorithm`: **not documented** in `user-emailbison` resources/spec.
-    - `canonical payload rules`: **not documented** in `user-emailbison` resources/spec.
-    - `timestamp/replay expectations`: **not documented** in `user-emailbison` resources/spec.
-  - Verification evidence: direct live checks of `/api/webhook-url`, `/api/webhook-events/sample-payload`, `/api/webhook-events/test-event`, plus keyword scans (`webhook signature`, `X-Signature`, `webhook header`, `timestamp`, `replay attack`, `hmac`, `secret`) returned no webhook-signature contract details.
-  - Slice 7 implementation status: webhook management surface (CRUD + event-types + sample payload + test-event) is implemented in capability-facing routes; inbound signature verification remains explicitly blocked.
+  - **Authoritative support contract (current):**
+    - EmailBison does **not** provide custom signature headers; no HMAC/signature verification contract exists.
+    - Authenticity guidance is origin/instance verification only; this is non-cryptographic trust and must be paired with compensating controls.
+    - Delivery retries are provider-managed up to 5 attempts on failure, then stopped.
+    - No provider event log/replay exists yet; missed events must be recovered by API polling backfill.
+  - Slice 7 implementation status: webhook management surface (CRUD + event-types + sample payload + test-event) is implemented in capability-facing routes.
 - **Confidence**: **Medium**
 
 ### Analytics
@@ -259,9 +258,11 @@ Confidence rubric:
 - **Auth/scoping**
   - No hard blocker. Tenant scoping model is robust (org/company checks + `org_id` filters).
   - Gap: add `organizations.provider_configs.emailbison.api_key` convention (proposed, pending confirmation with current repo config policy) and provider resolution for `email_outreach`.
-- **Webhook signature/verification**
-  - Current webhook ingress supports only `/api/webhooks/smartlead` and `/api/webhooks/heyreach`.
-  - Must add `/api/webhooks/emailbison` plus signature verification once EmailBison signature/header format is confirmed from live spec/resources.
+- **Webhook authenticity model (unsigned mode)**
+  - Ingress supports `/api/webhooks/emailbison/{path_token}` using non-cryptographic trust: secret path token + origin allowlist verification.
+  - Ingestion captures raw body, headers, and receive timestamp for audit/recovery.
+  - Idempotency remains event-id-first then SHA256(raw body) fallback to make provider retries safe.
+  - Risk note: origin-only verification is weaker than signed webhooks and is not cryptographic authenticity.
 - **Rate limits/retry strategy**
   - EmailBison system instructions specify `3000 req/min`.
   - Current provider clients use short exponential backoff for retryable HTTP statuses; EmailBison client must include provider-aware pacing for bulk/sync jobs (targeting below limit with jitter).
@@ -278,13 +279,12 @@ Confidence rubric:
 
 `ready with caveats`
 
-Rationale: no architectural dead-end exists, but provider dispatch refactor, EmailBison webhook ingress/signature contract, and normalization mapping must be completed before reliable production rollout.
+Rationale: no architectural dead-end exists; EmailBison webhook authenticity now runs in unsigned mode with compensating controls plus reconciliation backfill.
 
 Implementation gates:
 - Phase 2 gate: status-write contract confirmed from live spec (`PATCH pause/resume/archive`). Remaining write-path hardening should follow this contract.
-- Phase 3 gate: inbound webhook signature contract is **not yet published in current live MCP/spec outputs**; lock verification code until header/algorithm/canonicalization/replay contract is confirmed via updated live sources or vendor support.
-- Phase 3 contract ticket: `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16` (link pending provider submission/response)
-- Non-blocking hardening alignment: expand contract tests for auth-boundary permutations and malformed provider payload normalization negatives while Phase 3 verification remains blocked.
+- Webhook contract posture: `webhooks.signature_verification` is `provider_not_supported` (unsigned provider contract), not `blocked_contract_missing`.
+- Reliability requirement: because provider replay/log API is unavailable, maintain periodic reconciliation polling with cursor+lookback strategy for missed updates.
 - Endpoint coverage control: maintain `docs/EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY.md` and keep `EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY` + guard tests in sync for strict implementation proof.
 
 ## 4) Prioritized Implementation Plan (Phase 1 / 2 / 3)
@@ -296,18 +296,17 @@ Current rollout progress:
 - Slice 4 (Sender emails + warmup + healthcheck): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/inboxes.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 - Slice 5 (Tags + variables + blocklists): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 - Slice 6 (Workspaces + settings + analytics/stats): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
-- Slice 7 (Webhook management surface only): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py` for CRUD/test/sample/event-types; inbound signature verification intentionally remains gated.
+- Slice 7 (Webhook management surface only): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py` for CRUD/test/sample/event-types; inbound trust posture is unsigned mode with compensating controls.
 - Slice 8 (Export + analytics + bulk parity): implemented with discoverable bulk/export-adjacent operations in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, with auth-boundary/malformed payload/provider error-shape tests.
 
 Rollout readiness status:
 - Full EmailBison API rollout is complete for all discoverable management/read/write/bulk surfaces in live `user-emailbison` spec output.
 - Remaining gated/contract-limited items:
-  - Inbound webhook signature verification is blocked on `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16`.
   - Registry contract gaps remain: `custom_variables.update`, `custom_variables.delete`, `tags.update` as `blocked_contract_missing`.
-- **v1 closure status**: “EmailBison rollout complete for all discoverable contracts; remaining work is provider-contract gated only (webhook signature verification + 3 missing update/delete endpoints).”
+- **v1 closure status**: “EmailBison rollout complete for all discoverable contracts; webhook authenticity runs in unsigned mode with compensating controls, and remaining contract gaps are 3 missing update/delete endpoints.”
 
-Blocked items (explicit tracking):
-- `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16`
+Contract-limited items (explicit tracking):
+- `webhooks.signature_verification` -> `provider_not_supported` (unsigned provider contract; compensating controls required)
 - `custom_variables.update` -> `blocked_contract_missing`
 - `custom_variables.delete` -> `blocked_contract_missing`
 - `tags.update` -> `blocked_contract_missing`
@@ -347,21 +346,23 @@ Blocked items (explicit tracking):
 
 ### Phase 3 - Webhooks + observability hardening
 
-1. Confirm live EmailBison webhook signature contract (header, algorithm, payload canonicalization, replay/timestamp policy) from current MCP/API spec.
-2. Add `/api/webhooks/emailbison` ingestion route.
-3. Add signature verification implementation from canonical EmailBison webhook contract.
-4. Reuse existing dedupe/replay infrastructure in `src/routers/webhooks.py`.
-5. Add webhook authorization + replay tests alongside:
+1. Keep EmailBison ingress in unsigned mode with explicit compensating controls:
+   - secret path token (`/api/webhooks/emailbison/{path_token}`)
+   - origin allowlist verification
+   - raw body/header/receive timestamp capture
+2. Reuse existing dedupe/replay infrastructure in `src/routers/webhooks.py`.
+3. Add webhook authorization + replay tests alongside:
    - `tests/test_webhooks_endpoint.py`
    - `tests/test_webhooks_authorization_matrix.py`
-6. Add provider-specific observability dimensions and error taxonomy parity.
+4. Run scheduled reconciliation polling (`/api/internal/reconciliation/emailbison-backfill`) for eventual-consistency recovery where provider retries stop after 5 attempts.
+5. Add provider-specific observability dimensions and error taxonomy parity.
 
 ## 5) First 5 Implementation Tasks (Repo-Specific Quick Win)
 
 1. Create `src/providers/emailbison/client.py` using the same error/retry contract used by `smartlead`/`heyreach` clients.
 2. In `src/routers/campaigns.py`, replace `_get_smartlead_entitlement` with provider-agnostic `email_outreach` resolver and provider dispatch for list/create/status/replies paths.
 3. Extend `src/domain/normalization.py` with EmailBison status mappings used by campaign/lead/message upserts.
-4. Add EmailBison webhook route to `src/routers/webhooks.py` with event-key dedupe and payload-to-local-state projection.
+4. Add EmailBison webhook route to `src/routers/webhooks.py` with secret path token, origin checks, async processing, and event-key dedupe.
 5. Add focused tests:
    - provider dispatch unit/integration coverage in `tests/test_campaigns_endpoints.py`
    - webhook ingestion + idempotency in `tests/test_webhooks_endpoint.py`.

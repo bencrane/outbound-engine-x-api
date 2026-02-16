@@ -259,6 +259,137 @@ def test_heyreach_webhook_processes_and_updates_campaign(monkeypatch):
     _clear_overrides()
 
 
+def test_emailbison_webhook_requires_secret_path_token(monkeypatch):
+    fake_db = FakeSupabase({"webhook_events": []})
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    monkeypatch.setattr(webhooks_router.settings, "emailbison_webhook_path_token", "eb-token")
+    monkeypatch.setattr(webhooks_router.settings, "emailbison_webhook_allowed_origins", "app.emailbison.com")
+    client = TestClient(app)
+
+    response = client.post("/api/webhooks/emailbison", json={"event": "reply_received"})
+    assert response.status_code == 401
+    assert response.json()["detail"]["reason"] == "missing_path_token"
+
+
+def test_emailbison_webhook_rejects_disallowed_origin(monkeypatch):
+    fake_db = FakeSupabase({"webhook_events": []})
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    monkeypatch.setattr(webhooks_router.settings, "emailbison_webhook_path_token", "eb-token")
+    monkeypatch.setattr(webhooks_router.settings, "emailbison_webhook_allowed_origins", "app.emailbison.com")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/webhooks/emailbison/eb-token",
+        json={"event": "reply_received", "id": "eb-1"},
+        headers={"Origin": "https://malicious.example"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"]["reason"] == "origin_not_allowed"
+
+
+def test_emailbison_webhook_rejects_invalid_path_token(monkeypatch):
+    fake_db = FakeSupabase({"webhook_events": []})
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    monkeypatch.setattr(webhooks_router.settings, "emailbison_webhook_path_token", "eb-token")
+    monkeypatch.setattr(webhooks_router.settings, "emailbison_webhook_allowed_origins", "app.emailbison.com")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/webhooks/emailbison/wrong-token",
+        json={"event": "reply_received", "id": "eb-1"},
+        headers={"Origin": "https://app.emailbison.com"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"]["reason"] == "invalid_path_token"
+
+
+def test_emailbison_webhook_accepts_unsigned_with_compensating_controls(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "providers": [{"id": "prov-eb", "slug": "emailbison"}],
+            "webhook_events": [],
+            "company_campaigns": [
+                {
+                    "id": "cmp-eb-1",
+                    "org_id": "org-1",
+                    "company_id": "c-1",
+                    "provider_id": "prov-eb",
+                    "external_campaign_id": "500",
+                    "status": "ACTIVE",
+                    "deleted_at": None,
+                }
+            ],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+        }
+    )
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    monkeypatch.setattr(webhooks_router.settings, "emailbison_webhook_path_token", "eb-token")
+    monkeypatch.setattr(
+        webhooks_router.settings,
+        "emailbison_webhook_allowed_origins",
+        "app.emailbison.com,emailbison.com",
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/webhooks/emailbison/eb-token",
+        json={
+            "id": "eb-event-1",
+            "event": "reply_received",
+            "campaign_id": "500",
+            "message_id": "msg-1",
+            "status": "ACTIVE",
+        },
+        headers={"Origin": "https://app.emailbison.com"},
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["trust_mode"] == "unsigned_origin_plus_path_token"
+    assert body["non_cryptographic_trust"] is True
+    assert len(fake_db.tables["webhook_events"]) == 1
+    saved = fake_db.tables["webhook_events"][0]
+    assert saved["provider_slug"] == "emailbison"
+    assert saved["status"] in {"accepted", "processed"}
+    ingestion = saved["payload"]["_ingestion"]
+    assert ingestion["origin_host"] == "app.emailbison.com"
+    assert ingestion["trust_mode"] == "unsigned_origin_plus_path_token"
+    assert ingestion.get("received_at")
+
+
+def test_emailbison_webhook_duplicate_retry_is_idempotent(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "providers": [{"id": "prov-eb", "slug": "emailbison"}],
+            "webhook_events": [],
+            "company_campaigns": [],
+            "company_campaign_leads": [],
+            "company_campaign_messages": [],
+        }
+    )
+    monkeypatch.setattr(webhooks_router, "supabase", fake_db)
+    monkeypatch.setattr(webhooks_router.settings, "emailbison_webhook_path_token", "eb-token")
+    monkeypatch.setattr(webhooks_router.settings, "emailbison_webhook_allowed_origins", "app.emailbison.com")
+    client = TestClient(app)
+
+    payload = {"id": "eb-dup-1", "event": "reply_received", "campaign_id": "500"}
+    first = client.post(
+        "/api/webhooks/emailbison/eb-token",
+        json=payload,
+        headers={"Origin": "https://app.emailbison.com"},
+    )
+    second = client.post(
+        "/api/webhooks/emailbison/eb-token",
+        json=payload,
+        headers={"Origin": "https://app.emailbison.com"},
+    )
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert second.json()["status"] == "duplicate_ignored"
+    assert len(fake_db.tables["webhook_events"]) == 1
+
+
 def test_replay_webhook_event_reapplies_payload(monkeypatch):
     fake_db = FakeSupabase(
         {

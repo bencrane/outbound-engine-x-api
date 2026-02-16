@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class ReconciliationRunRequest(BaseModel):
-    provider_slug: Literal["smartlead", "heyreach"] | None = None
+    provider_slug: Literal["smartlead", "heyreach", "emailbison"] | None = None
     org_id: str | None = None
     company_id: str | None = None
     dry_run: bool = True
@@ -18,7 +18,7 @@ class ReconciliationRunRequest(BaseModel):
 
 
 class ReconciliationProviderStats(BaseModel):
-    provider_slug: Literal["smartlead", "heyreach"]
+    provider_slug: Literal["smartlead", "heyreach", "emailbison"]
     companies_scanned: int
     campaigns_scanned: int
     campaigns_created: int
@@ -37,3 +37,26 @@ class ReconciliationRunResponse(BaseModel):
     started_at: datetime
     finished_at: datetime
     providers: list[ReconciliationProviderStats]
+
+
+class EmailBisonWebhookBackfillRequest(BaseModel):
+    org_id: str | None = None
+    company_id: str | None = None
+    dry_run: bool = True
+    lookback_hours: int = Field(default=24, ge=1, le=168)
+    cursor_ts: datetime | None = None
+    campaign_limit: int = Field(default=200, ge=1, le=1000)
+
+
+class EmailBisonWebhookBackfillResponse(BaseModel):
+    dry_run: bool
+    started_at: datetime
+    finished_at: datetime
+    cursor_start: datetime
+    cursor_end: datetime
+    campaigns_scanned: int
+    campaigns_updated: int
+    leads_updated: int
+    messages_upserted: int
+    errors: list[str] = []
+    notes: list[str] = []

@@ -110,7 +110,7 @@ Notes:
 
 Notes:
 - This slice covers management/test/sample/event-types only.
-- Inbound webhook signature verification remains blocked on `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16`.
+- Inbound webhook signature verification is `provider_not_supported` by current provider contract (unsigned webhook mode; compensating controls required).
 
 ## Slice 8 Coverage (Export + Analytics + Bulk Parity)
 
@@ -130,6 +130,8 @@ Notes:
 
 Source of truth in code: `src/providers/emailbison/client.py` -> `EMAILBISON_CONTRACT_STATUS_REGISTRY`
 
+- `webhooks.signature_verification` -> `provider_not_supported`
+  - Evidence: support-confirmed contract states EmailBison does not provide signature headers/HMAC contract currently.
 - `custom_variables.update` -> `blocked_contract_missing`
   - Evidence: live `user-emailbison` spec output currently surfaces `GET|POST /api/custom-variables` only.
 - `custom_variables.delete` -> `blocked_contract_missing`
@@ -139,4 +141,4 @@ Source of truth in code: `src/providers/emailbison/client.py` -> `EMAILBISON_CON
 
 ## Guardrails
 
-- Phase 3 webhook signature verification remains blocked until `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16` is resolved.
+- EmailBison inbound webhook trust is explicitly non-cryptographic in current contract; keep compensating controls active (path token + origin allowlist + audit capture + reconciliation backfill).

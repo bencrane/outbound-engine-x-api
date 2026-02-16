@@ -102,6 +102,7 @@ def _base_tables():
         "providers": [
             {"id": "prov-smartlead", "slug": "smartlead"},
             {"id": "prov-heyreach", "slug": "heyreach"},
+            {"id": "prov-emailbison", "slug": "emailbison"},
         ],
         "organizations": [
             {
@@ -110,6 +111,7 @@ def _base_tables():
                 "provider_configs": {
                     "smartlead": {"api_key": "sl-key"},
                     "heyreach": {"api_key": "hr-key"},
+                    "emailbison": {"api_key": "eb-key"},
                 },
             }
         ],
@@ -127,6 +129,14 @@ def _base_tables():
                 "org_id": "org-1",
                 "company_id": "c-1",
                 "provider_id": "prov-heyreach",
+                "provider_config": {},
+                "deleted_at": None,
+            },
+            {
+                "id": "ent-eb",
+                "org_id": "org-1",
+                "company_id": "c-1",
+                "provider_id": "prov-emailbison",
                 "provider_config": {},
                 "deleted_at": None,
             },
@@ -278,6 +288,43 @@ def test_reconciliation_scheduled_runs_with_valid_secret(monkeypatch):
     assert len(fake_db.tables["company_campaigns"]) == 1
 
 
+def test_emailbison_backfill_scheduled_runs_with_valid_secret(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-eb-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "500",
+            "status": "PAUSED",
+            "updated_at": "2026-02-16T10:00:00+00:00",
+            "deleted_at": None,
+        }
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(reconciliation_router, "supabase", fake_db)
+    monkeypatch.setattr(reconciliation_router.settings, "internal_scheduler_secret", "sched-secret")
+    monkeypatch.setattr(
+        reconciliation_router,
+        "emailbison_list_campaigns",
+        lambda **kwargs: [{"id": 500, "status": "ACTIVE"}],
+    )
+    monkeypatch.setattr(reconciliation_router, "emailbison_get_campaign_leads", lambda **kwargs: [])
+    monkeypatch.setattr(reconciliation_router, "emailbison_get_campaign_replies", lambda **kwargs: [])
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/internal/reconciliation/emailbison-backfill/run-scheduled",
+        json={"dry_run": False, "lookback_hours": 24},
+        headers={"X-Internal-Scheduler-Secret": "sched-secret"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["campaigns_scanned"] == 1
+    assert body["campaigns_updated"] == 1
+
+
 def test_reconciliation_message_limit_caps_upserts(monkeypatch):
     fake_db = FakeSupabase(_base_tables())
     monkeypatch.setattr(reconciliation_router, "supabase", fake_db)
@@ -387,4 +434,118 @@ def test_reconciliation_heyreach_pull_best_effort_upserts_messages(monkeypatch):
     assert stats["messages_scanned"] == 1
     assert stats["messages_created"] == 1
     assert len(fake_db.tables["company_campaign_messages"]) == 1
+    _clear()
+
+
+def test_emailbison_webhook_backfill_updates_leads_and_messages(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-eb-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "500",
+            "status": "PAUSED",
+            "updated_at": "2026-02-15T10:00:00+00:00",
+            "deleted_at": None,
+        }
+    ]
+    tables["company_campaign_leads"] = [
+        {
+            "id": "lead-eb-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "company_campaign_id": "cmp-eb-1",
+            "provider_id": "prov-emailbison",
+            "external_lead_id": "1001",
+            "status": "pending",
+            "deleted_at": None,
+        }
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(reconciliation_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        reconciliation_router,
+        "emailbison_list_campaigns",
+        lambda **kwargs: [{"id": 500, "status": "ACTIVE"}],
+    )
+    monkeypatch.setattr(
+        reconciliation_router,
+        "emailbison_get_campaign_leads",
+        lambda **kwargs: [{"id": 1001, "email": "eb@example.com", "status": "replied"}],
+    )
+    monkeypatch.setattr(
+        reconciliation_router,
+        "emailbison_get_campaign_replies",
+        lambda **kwargs: [{"id": "rep-1", "lead_id": 1001, "subject": "Hi", "body": "Interested", "direction": "inbound"}],
+    )
+    _set_super_admin()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/internal/reconciliation/emailbison-backfill",
+        json={"dry_run": False, "lookback_hours": 72},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["campaigns_scanned"] == 1
+    assert body["campaigns_updated"] == 1
+    assert body["leads_updated"] == 1
+    assert body["messages_upserted"] == 1
+    assert fake_db.tables["company_campaigns"][0]["status"] == "ACTIVE"
+    assert fake_db.tables["company_campaign_leads"][0]["status"] == "replied"
+    assert len(fake_db.tables["company_campaign_messages"]) == 1
+    _clear()
+
+
+def test_emailbison_webhook_backfill_uses_explicit_cursor(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-eb-old",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "500",
+            "status": "PAUSED",
+            "updated_at": "2026-02-10T10:00:00+00:00",
+            "deleted_at": None,
+        },
+        {
+            "id": "cmp-eb-new",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "501",
+            "status": "PAUSED",
+            "updated_at": "2026-02-16T10:00:00+00:00",
+            "deleted_at": None,
+        },
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(reconciliation_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        reconciliation_router,
+        "emailbison_list_campaigns",
+        lambda **kwargs: [{"id": 501, "status": "ACTIVE"}],
+    )
+    monkeypatch.setattr(reconciliation_router, "emailbison_get_campaign_leads", lambda **kwargs: [])
+    monkeypatch.setattr(reconciliation_router, "emailbison_get_campaign_replies", lambda **kwargs: [])
+    _set_super_admin()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/internal/reconciliation/emailbison-backfill",
+        json={
+            "dry_run": True,
+            "cursor_ts": "2026-02-15T00:00:00+00:00",
+            "campaign_limit": 10,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["campaigns_scanned"] == 1
+    assert body["campaigns_updated"] == 1
+    assert "cursor strategy" in " ".join(body["notes"]).lower()
     _clear()
