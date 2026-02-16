@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     observability_export_url: str | None = None
     observability_export_bearer_token: str | None = None
     observability_export_timeout_seconds: float = 3.0
+    lob_api_key_test: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

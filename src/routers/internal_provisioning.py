@@ -6,9 +6,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from src.auth import SuperAdminContext, get_current_super_admin
+from src.config import settings
 from src.db import supabase
 from src.domain.provider_errors import provider_error_detail, provider_error_http_status
 from src.models.provisioning import (
+    DirectMailProvisionRequest,
+    DirectMailProvisionResponse,
     EmailOutreachProvisionRequest,
     EmailOutreachProvisionResponse,
 )
@@ -18,6 +21,10 @@ from src.providers.emailbison.client import (
     EmailBisonProviderError,
     validate_api_key as emailbison_validate_api_key,
     list_sender_emails as emailbison_list_sender_emails,
+)
+from src.providers.lob.client import (
+    LobProviderError,
+    validate_api_key as lob_validate_api_key,
 )
 
 
@@ -31,7 +38,7 @@ def _now_iso() -> str:
 def _raise_provider_http_error(
     provider: str,
     operation: str,
-    exc: SmartleadProviderError | EmailBisonProviderError,
+    exc: SmartleadProviderError | EmailBisonProviderError | LobProviderError,
 ) -> None:
     raise HTTPException(
         status_code=provider_error_http_status(exc),
@@ -48,13 +55,21 @@ def _get_company(company_id: str) -> dict[str, Any]:
     return result.data[0]
 
 
-def _get_email_outreach_capability() -> dict[str, Any]:
+def _get_capability_by_slug(capability_slug: str) -> dict[str, Any]:
     result = supabase.table("capabilities").select("id, slug").eq(
-        "slug", "email_outreach"
+        "slug", capability_slug
     ).execute()
     if not result.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Capability not configured")
     return result.data[0]
+
+
+def _get_email_outreach_capability() -> dict[str, Any]:
+    return _get_capability_by_slug("email_outreach")
+
+
+def _get_direct_mail_capability() -> dict[str, Any]:
+    return _get_capability_by_slug("direct_mail")
 
 
 def _get_provider_for_capability(capability_id: str, provider_slug: str = "smartlead") -> dict[str, Any]:
@@ -66,7 +81,11 @@ def _get_provider_for_capability(capability_id: str, provider_slug: str = "smart
     return result.data[0]
 
 
-def _get_org_provider_config(org_id: str, provider_slug: str) -> dict[str, Any]:
+def _get_org_provider_config(
+    org_id: str,
+    provider_slug: str,
+    fallback_api_key: str | None = None,
+) -> dict[str, Any]:
     result = supabase.table("organizations").select("provider_configs").eq(
         "id", org_id
     ).is_("deleted_at", "null").execute()
@@ -74,7 +93,7 @@ def _get_org_provider_config(org_id: str, provider_slug: str) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
     provider_configs = result.data[0].get("provider_configs") or {}
     provider_config = provider_configs.get(provider_slug) or {}
-    api_key = provider_config.get("api_key")
+    api_key = provider_config.get("api_key") or fallback_api_key
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -118,6 +137,20 @@ def _to_response(entitlement: dict[str, Any], provider_slug: str) -> EmailOutrea
         entitlement_status=entitlement["status"],
         provisioning_state=provider_config.get("provisioning_state", "pending_client_mapping"),
         smartlead_client_id=provider_config.get("smartlead_client_id"),
+        last_error=provider_config.get("last_provision_error"),
+        updated_at=entitlement["updated_at"],
+    )
+
+
+def _to_direct_mail_response(entitlement: dict[str, Any]) -> DirectMailProvisionResponse:
+    provider_config = entitlement.get("provider_config") or {}
+    return DirectMailProvisionResponse(
+        company_id=entitlement["company_id"],
+        org_id=entitlement["org_id"],
+        capability="direct_mail",
+        provider="lob",
+        entitlement_status=entitlement["status"],
+        provisioning_state=provider_config.get("provisioning_state", "connected"),
         last_error=provider_config.get("last_provision_error"),
         updated_at=entitlement["updated_at"],
     )
@@ -252,6 +285,89 @@ async def get_email_outreach_provisioning_status(
     if not provider_result.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Provider not configured")
     return _to_response(entitlement.data[0], provider_result.data[0]["slug"])
+
+
+@router.post("/direct-mail/{company_id}", response_model=DirectMailProvisionResponse)
+async def provision_direct_mail(
+    company_id: str,
+    data: DirectMailProvisionRequest,
+    ctx: SuperAdminContext = Depends(get_current_super_admin),
+):
+    company = _get_company(company_id)
+    capability = _get_direct_mail_capability()
+    provider = _get_provider_for_capability(capability["id"], data.provider)
+    entitlement = _get_or_create_entitlement(company["org_id"], company_id, capability["id"], provider["id"])
+
+    provider_credentials = _get_org_provider_config(
+        company["org_id"],
+        provider["slug"],
+        fallback_api_key=settings.lob_api_key_test,
+    )
+    provider_config = entitlement.get("provider_config") or {}
+
+    try:
+        lob_validate_api_key(api_key=provider_credentials["api_key"])
+    except LobProviderError as exc:
+        provider_config.update(
+            {
+                "provisioning_state": "failed",
+                "last_provision_error": str(exc),
+                "last_provision_attempt_at": _now_iso(),
+                "updated_by_super_admin_id": ctx.super_admin_id,
+            }
+        )
+        supabase.table("company_entitlements").update(
+            {
+                "status": "disconnected",
+                "provider_config": provider_config,
+                "updated_at": _now_iso(),
+            }
+        ).eq("id", entitlement["id"]).eq("org_id", company["org_id"]).execute()
+        _raise_provider_http_error("lob", "direct_mail_provision", exc)
+
+    provider_config.update(
+        {
+            "provisioning_state": "connected",
+            "last_provision_error": None,
+            "last_provision_attempt_at": _now_iso(),
+            "updated_by_super_admin_id": ctx.super_admin_id,
+        }
+    )
+    updated = supabase.table("company_entitlements").update(
+        {
+            "status": "connected",
+            "provider_config": provider_config,
+            "updated_at": _now_iso(),
+        }
+    ).eq("id", entitlement["id"]).eq("org_id", company["org_id"]).execute()
+    return _to_direct_mail_response(updated.data[0])
+
+
+@router.get("/direct-mail/{company_id}/status", response_model=DirectMailProvisionResponse)
+async def get_direct_mail_provisioning_status(
+    company_id: str,
+    ctx: SuperAdminContext = Depends(get_current_super_admin),
+):
+    _ = ctx
+    company = _get_company(company_id)
+    capability = _get_direct_mail_capability()
+    entitlement = supabase.table("company_entitlements").select("*").eq(
+        "org_id", company["org_id"]
+    ).eq("company_id", company_id).eq("capability_id", capability["id"]).execute()
+
+    if not entitlement.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Direct mail entitlement not found for company",
+        )
+
+    provider_result = supabase.table("providers").select("id, slug").eq(
+        "id", entitlement.data[0]["provider_id"]
+    ).execute()
+    if not provider_result.data or provider_result.data[0]["slug"] != "lob":
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Provider not configured")
+
+    return _to_direct_mail_response(entitlement.data[0])
 
 
 @router.post("/email-outreach/{company_id}/sync-inboxes", response_model=InboxSyncResponse)

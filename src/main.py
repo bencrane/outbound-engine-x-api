@@ -15,6 +15,7 @@ from src.routers import (
     campaigns,
     email_outreach,
     linkedin_campaigns,
+    direct_mail,
     webhooks,
     analytics,
 )
@@ -54,6 +55,7 @@ app.include_router(inboxes.router)
 app.include_router(campaigns.router)
 app.include_router(email_outreach.router)
 app.include_router(linkedin_campaigns.router)
+app.include_router(direct_mail.router)
 app.include_router(webhooks.router)
 app.include_router(analytics.router)
 

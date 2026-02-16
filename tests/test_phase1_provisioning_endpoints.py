@@ -300,3 +300,97 @@ def test_sync_inboxes_success(monkeypatch):
     assert payload["smartlead_client_id"] == 999
 
     _clear_overrides()
+
+
+def test_provision_direct_mail_lob_connected(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "companies": [{"id": "c-1", "org_id": "org-1", "deleted_at": None}],
+            "capabilities": [{"id": "cap-direct-mail", "slug": "direct_mail"}],
+            "providers": [{"id": "prov-lob", "slug": "lob", "capability_id": "cap-direct-mail"}],
+            "organizations": [{"id": "org-1", "deleted_at": None, "provider_configs": {"lob": {"api_key": "lob-key"}}}],
+            "company_entitlements": [],
+        }
+    )
+    monkeypatch.setattr(provisioning_router, "supabase", fake_db)
+    monkeypatch.setattr(provisioning_router, "lob_validate_api_key", lambda **kwargs: None)
+    _set_super_admin_override()
+
+    client = TestClient(app)
+    response = client.post("/api/internal/provisioning/direct-mail/c-1", json={})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["capability"] == "direct_mail"
+    assert payload["provider"] == "lob"
+    assert payload["entitlement_status"] == "connected"
+    assert payload["provisioning_state"] == "connected"
+
+    status_response = client.get("/api/internal/provisioning/direct-mail/c-1/status")
+    assert status_response.status_code == 200
+    assert status_response.json()["provider"] == "lob"
+
+    _clear_overrides()
+
+
+def test_provision_direct_mail_lob_uses_env_fallback_key(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "companies": [{"id": "c-1", "org_id": "org-1", "deleted_at": None}],
+            "capabilities": [{"id": "cap-direct-mail", "slug": "direct_mail"}],
+            "providers": [{"id": "prov-lob", "slug": "lob", "capability_id": "cap-direct-mail"}],
+            "organizations": [{"id": "org-1", "deleted_at": None, "provider_configs": {}}],
+            "company_entitlements": [],
+        }
+    )
+    monkeypatch.setattr(provisioning_router, "supabase", fake_db)
+    monkeypatch.setattr(provisioning_router.settings, "lob_api_key_test", "lob-env-test-key", raising=False)
+
+    captured: dict[str, str] = {}
+
+    def _validate(**kwargs):
+        captured["api_key"] = kwargs["api_key"]
+
+    monkeypatch.setattr(provisioning_router, "lob_validate_api_key", _validate)
+    _set_super_admin_override()
+
+    client = TestClient(app)
+    response = client.post("/api/internal/provisioning/direct-mail/c-1", json={})
+
+    assert response.status_code == 200
+    assert captured["api_key"] == "lob-env-test-key"
+
+    _clear_overrides()
+
+
+def test_provision_direct_mail_lob_failed_on_provider_validation(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "companies": [{"id": "c-1", "org_id": "org-1", "deleted_at": None}],
+            "capabilities": [{"id": "cap-direct-mail", "slug": "direct_mail"}],
+            "providers": [{"id": "prov-lob", "slug": "lob", "capability_id": "cap-direct-mail"}],
+            "organizations": [{"id": "org-1", "deleted_at": None, "provider_configs": {"lob": {"api_key": "bad-key"}}}],
+            "company_entitlements": [],
+        }
+    )
+    monkeypatch.setattr(provisioning_router, "supabase", fake_db)
+
+    def _raise(**kwargs):
+        raise provisioning_router.LobProviderError("Invalid Lob API key")
+
+    monkeypatch.setattr(provisioning_router, "lob_validate_api_key", _raise)
+    _set_super_admin_override()
+
+    client = TestClient(app)
+    response = client.post("/api/internal/provisioning/direct-mail/c-1", json={})
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["type"] == "provider_error"
+    assert detail["provider"] == "lob"
+    assert detail["operation"] == "direct_mail_provision"
+    assert detail["category"] == "terminal"
+    assert detail["retryable"] is False
+    assert "Invalid Lob API key" in detail["message"]
+
+    _clear_overrides()
