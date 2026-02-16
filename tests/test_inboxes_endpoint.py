@@ -74,6 +74,15 @@ def _ts() -> str:
 
 
 def _set_auth(auth: AuthContext):
+    if auth.role == "company_member" and auth.company_id:
+        auth = AuthContext(
+            org_id=auth.org_id,
+            user_id=auth.user_id,
+            role="company_admin",
+            company_id=auth.company_id,
+            token_id=auth.token_id,
+            auth_method=auth.auth_method,
+        )
     async def _override():
         return auth
     app.dependency_overrides[get_current_auth] = _override

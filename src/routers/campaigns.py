@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from src.auth import AuthContext, get_current_auth
+from src.auth import AuthContext, get_current_auth, has_permission
 from src.db import supabase
 from src.domain.normalization import (
     normalize_campaign_status,
@@ -78,6 +78,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _require_campaigns_read(auth: AuthContext) -> None:
+    if not has_permission(auth, "campaigns.read"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: campaigns.read")
+
+
+def _require_campaigns_write(auth: AuthContext) -> None:
+    if not has_permission(auth, "campaigns.write"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: campaigns.write")
+
+
 def _raise_provider_http_error(
     provider: str,
     operation: str,
@@ -117,12 +127,13 @@ def _extract_sequence_step_number(payload: dict[str, Any]) -> int | None:
 
 
 def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
+    _require_campaigns_write(auth)
     if auth.company_id:
         if company_id and company_id != auth.company_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
         return auth.company_id
 
-    if auth.role != "admin":
+    if auth.role != "org_admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
     if not company_id:
         raise HTTPException(
@@ -138,6 +149,7 @@ def _resolve_company_scope(
     company_id: str | None,
     all_companies: bool,
 ) -> str | None:
+    _require_campaigns_read(auth)
     if auth.company_id:
         if all_companies:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="All-companies view is admin only")
@@ -145,7 +157,7 @@ def _resolve_company_scope(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
         return auth.company_id
 
-    if auth.role != "admin":
+    if auth.role != "org_admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
 
     if all_companies:
@@ -226,6 +238,7 @@ def _get_org_provider_config(org_id: str, provider_slug: str) -> dict[str, Any]:
 
 
 def _get_campaign_for_auth(auth: AuthContext, campaign_id: str) -> dict[str, Any]:
+    _require_campaigns_read(auth)
     query = supabase.table("company_campaigns").select(
         "id, org_id, company_id, provider_id, external_campaign_id, name, status, created_by_user_id, created_at, updated_at"
     ).eq("id", campaign_id).eq("org_id", auth.org_id).is_("deleted_at", "null")
@@ -523,6 +536,7 @@ async def update_campaign_status(
     data: CampaignStatusUpdateRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     provider_slug = _get_campaign_provider_slug(campaign)
     provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
@@ -648,6 +662,7 @@ async def save_campaign_sequence(
     data: CampaignSequenceUpsertRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     provider_slug = _get_campaign_provider_slug(campaign)
     provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
@@ -765,6 +780,7 @@ async def save_campaign_schedule(
     data: CampaignScheduleUpsertRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     provider_slug = _get_campaign_provider_slug(campaign)
     provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
@@ -798,6 +814,7 @@ async def add_campaign_leads(
     data: CampaignLeadsAddRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     provider_slug = _get_campaign_provider_slug(campaign)
     provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
@@ -919,6 +936,7 @@ async def pause_campaign_lead(
     lead_id: str,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     lead = _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
     provider_slug = _get_campaign_provider_slug(campaign)
@@ -970,6 +988,7 @@ async def resume_campaign_lead(
     lead_id: str,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     lead = _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
     provider_slug = _get_campaign_provider_slug(campaign)
@@ -1006,6 +1025,7 @@ async def unsubscribe_campaign_lead(
     lead_id: str,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     lead = _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
     provider_slug = _get_campaign_provider_slug(campaign)

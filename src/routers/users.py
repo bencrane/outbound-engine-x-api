@@ -2,10 +2,30 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from passlib.hash import bcrypt
 from src.auth import AuthContext, require_org_admin
+from src.auth.permissions import is_org_admin_role, normalize_role
 from src.db import supabase
 from src.models.users import UserCreate, UserResponse, UserUpdate
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+def _validate_role_company_pair(
+    *,
+    role: str,
+    company_id: str | None,
+    auth: AuthContext,
+) -> tuple[str, str | None]:
+    normalized_role = normalize_role(role)
+    if normalized_role == "org_admin":
+        if not is_org_admin_role(auth.role):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+        return normalized_role, None
+    if not company_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="company_id is required for company-level roles",
+        )
+    return normalized_role, company_id
 
 
 @router.get("/", response_model=list[UserResponse])
@@ -35,10 +55,12 @@ async def list_users(
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(data: UserCreate, auth: AuthContext = Depends(require_org_admin)):
     """Create a new user in the organization."""
+    role, company_id = _validate_role_company_pair(role=data.role, company_id=data.company_id, auth=auth)
+
     # Validate company belongs to org if provided
-    if data.company_id:
+    if company_id:
         company_check = supabase.table("companies").select("id").eq(
-            "id", data.company_id
+            "id", company_id
         ).eq("org_id", auth.org_id).is_("deleted_at", "null").execute()
 
         if not company_check.data:
@@ -48,10 +70,10 @@ async def create_user(data: UserCreate, auth: AuthContext = Depends(require_org_
         "org_id": auth.org_id,
         "email": data.email,
         "password_hash": bcrypt.hash(data.password),
-        "company_id": data.company_id,
+        "company_id": company_id,
         "name_first": data.name_first,
         "name_last": data.name_last,
-        "role": data.role,
+        "role": role,
     }
 
     result = supabase.table("users").insert(insert_data).execute()
@@ -90,6 +112,13 @@ async def update_user(
     auth: AuthContext = Depends(require_org_admin),
 ):
     """Update a user."""
+    existing_result = supabase.table("users").select(
+        "id, role, company_id"
+    ).eq("id", user_id).eq("org_id", auth.org_id).is_("deleted_at", "null").execute()
+    if not existing_result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    existing_user = existing_result.data[0]
+
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
@@ -98,10 +127,22 @@ async def update_user(
     if "password" in update_data:
         update_data["password_hash"] = bcrypt.hash(update_data.pop("password"))
 
-    # Validate company belongs to org if being updated
-    if "company_id" in update_data and update_data["company_id"]:
+    target_role = normalize_role(update_data.get("role", existing_user["role"]))
+    requested_company_id = (
+        update_data["company_id"] if "company_id" in update_data else existing_user.get("company_id")
+    )
+    target_role, target_company_id = _validate_role_company_pair(
+        role=target_role,
+        company_id=requested_company_id,
+        auth=auth,
+    )
+    update_data["role"] = target_role
+    update_data["company_id"] = target_company_id
+
+    # Validate company belongs to org when company-level role is used
+    if target_company_id:
         company_check = supabase.table("companies").select("id").eq(
-            "id", update_data["company_id"]
+            "id", target_company_id
         ).eq("org_id", auth.org_id).is_("deleted_at", "null").execute()
 
         if not company_check.data:

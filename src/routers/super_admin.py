@@ -4,14 +4,19 @@ import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 import bcrypt as bcrypt_lib
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Literal
 from src.auth import SuperAdminContext, get_current_super_admin, create_super_admin_token
+from src.auth.permissions import normalize_role
 from src.config import settings
 from src.db import supabase
 from src.observability import metrics_snapshot, persist_metrics_snapshot
 
 logger = logging.getLogger(__name__)
+
+
+RoleInput = Literal["org_admin", "company_admin", "company_member", "admin", "user"]
+RoleCanonical = Literal["org_admin", "company_admin", "company_member"]
 
 
 def hash_password(password: str) -> str:
@@ -68,7 +73,12 @@ class UserCreate(BaseModel):
     password: str
     name_first: str | None = None
     name_last: str | None = None
-    role: Literal["admin", "user"] = "admin"
+    role: RoleInput = "org_admin"
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _normalize_role(cls, value: str) -> str:
+        return normalize_role(value)
 
 
 class UserResponse(BaseModel):
@@ -77,9 +87,14 @@ class UserResponse(BaseModel):
     company_id: str | None
     name_first: str | None
     name_last: str | None
-    role: Literal["admin", "user"]
+    role: RoleCanonical
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _normalize_role(cls, value: str) -> str:
+        return normalize_role(value)
 
 
 class CompanyCreate(BaseModel):

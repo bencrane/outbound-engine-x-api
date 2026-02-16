@@ -4,6 +4,9 @@ from src.auth.dependencies import (
     get_current_org,
     get_current_user,
     get_current_super_admin,
+    has_permission,
+    is_org_admin,
+    require_permission,
     require_org_admin,
 )
 from src.auth.jwt import create_super_admin_token
@@ -15,6 +18,9 @@ __all__ = [
     "get_current_org",
     "get_current_user",
     "get_current_super_admin",
+    "has_permission",
+    "is_org_admin",
+    "require_permission",
     "require_org_admin",
     "create_super_admin_token",
 ]

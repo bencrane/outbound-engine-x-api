@@ -129,8 +129,30 @@ async def get_current_auth(authorization: str = Header(None)) -> AuthContext:
 |-------|--------|---------|
 | `org_id` | Token/JWT | Tenant isolation — scopes every query |
 | `user_id` | Token/JWT | Audit trail, ownership |
-| `company_id` | JWT only | Company-level scoping for user sessions |
+| `role` | User record | Canonical RBAC role used for policy checks |
+| `permissions[]` | Derived from role | Explicit capability checks used by endpoint guards and frontend feature gating |
+| `company_id` | Token/JWT + user record | Company-level scoping for company roles |
 | `auth_method` | Derived | "api_token" or "session" |
+
+### RBAC Model (Phase 1)
+
+- `org_admin`: org-wide management and cross-company visibility.
+- `company_admin`: company-scoped operational management.
+- `company_member`: company-scoped day-to-day operator with read access and restricted write access.
+
+Role names are canonicalized at auth boundaries. Legacy role inputs are accepted during transition:
+
+- `admin` -> `org_admin`
+- `user` -> `company_member`
+
+Authorization is permission-first (role bundles), not string-comparison-first:
+
+- `campaigns.read`, `campaigns.write`
+- `inboxes.read`, `inboxes.write`
+- `analytics.read`
+- `org.manage_users`, `org.manage_companies`, `org.manage_entitlements`
+
+`GET /api/auth/me` includes both canonical `role` and `permissions[]` so frontend surfaces can hide/disable actions (for example, campaign creation for users without `campaigns.write`).
 
 ## Modal + Railway Pattern
 

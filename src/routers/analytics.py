@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from src.auth import AuthContext, get_current_auth
+from src.auth import AuthContext, get_current_auth, has_permission
 from src.db import supabase
 from src.models.analytics import (
     CampaignAnalyticsDashboardItem,
@@ -40,12 +40,18 @@ def _parse_datetime(value: Any) -> datetime | None:
     return None
 
 
+def _require_analytics_read(auth: AuthContext) -> None:
+    if not has_permission(auth, "analytics.read"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: analytics.read")
+
+
 def _resolve_company_scope(auth: AuthContext, company_id: str | None) -> str | None:
+    _require_analytics_read(auth)
     if auth.company_id:
         if company_id and company_id != auth.company_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
         return auth.company_id
-    if auth.role != "admin":
+    if auth.role != "org_admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
     return company_id
 
@@ -63,7 +69,8 @@ def _persist_analytics_snapshot(source: str) -> None:
 
 
 def _get_campaign_for_auth(auth: AuthContext, campaign_id: str) -> dict[str, Any]:
-    if not auth.company_id and auth.role != "admin":
+    _require_analytics_read(auth)
+    if not auth.company_id and auth.role != "org_admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
     query = (
         supabase.table("company_campaigns")
@@ -513,7 +520,7 @@ async def get_direct_mail_analytics(
         resolved_company_id = auth.company_id
         resolved_all_companies = False
     else:
-        if auth.role != "admin":
+        if auth.role != "org_admin":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
         if all_companies and company_id:
             raise HTTPException(

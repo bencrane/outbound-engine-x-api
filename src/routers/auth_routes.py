@@ -111,6 +111,7 @@ async def get_me(auth: AuthContext = Depends(get_current_auth)):
         user_id=auth.user_id,
         org_id=auth.org_id,
         role=auth.role,
+        permissions=list(auth.permissions),
         company_id=auth.company_id,
         auth_method=auth.auth_method,
     )

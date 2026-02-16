@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from src.auth import AuthContext, get_current_auth
+from src.auth import AuthContext, get_current_auth, has_permission
 from src.db import supabase
 from src.domain.provider_errors import provider_error_detail, provider_error_http_status
 from src.models.inboxes import (
@@ -39,6 +39,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _require_inboxes_read(auth: AuthContext) -> None:
+    if not has_permission(auth, "inboxes.read"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: inboxes.read")
+
+
+def _require_inboxes_write(auth: AuthContext) -> None:
+    if not has_permission(auth, "inboxes.write"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: inboxes.write")
+
+
 def _raise_provider_http_error(operation: str, exc: EmailBisonProviderError) -> None:
     raise HTTPException(
         status_code=provider_error_http_status(exc),
@@ -47,6 +57,7 @@ def _raise_provider_http_error(operation: str, exc: EmailBisonProviderError) -> 
 
 
 def _resolve_company_scope(auth: AuthContext, company_id: str | None, all_companies: bool) -> str | None:
+    _require_inboxes_read(auth)
     resolved_company_id: str | None = company_id
     if auth.company_id:
         if all_companies:
@@ -55,7 +66,7 @@ def _resolve_company_scope(auth: AuthContext, company_id: str | None, all_compan
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
         resolved_company_id = auth.company_id
     else:
-        if auth.role != "admin":
+        if auth.role != "org_admin":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
         if all_companies and company_id:
             raise HTTPException(
@@ -96,6 +107,7 @@ def _get_org_provider_config(org_id: str, provider_slug: str) -> dict[str, Any]:
 
 
 def _get_inbox_for_auth(auth: AuthContext, inbox_id: str) -> dict[str, Any]:
+    _require_inboxes_read(auth)
     inbox_result = supabase.table("company_inboxes").select("*").eq(
         "id", inbox_id
     ).eq("org_id", auth.org_id).is_("deleted_at", "null").execute()
@@ -182,6 +194,7 @@ async def update_inbox_sender_email(
     data: InboxSenderEmailUpdateRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_inboxes_write(auth)
     inbox = _get_inbox_for_auth(auth, inbox_id)
     if inbox["provider_slug"] != "emailbison":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sender-email update unavailable for this provider")
@@ -211,6 +224,7 @@ async def delete_inbox_sender_email(
     inbox_id: str,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_inboxes_write(auth)
     inbox = _get_inbox_for_auth(auth, inbox_id)
     if inbox["provider_slug"] != "emailbison":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sender-email delete unavailable for this provider")
@@ -257,6 +271,7 @@ async def enable_inbox_warmup(
     data: InboxWarmupBulkToggleRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_inboxes_write(auth)
     inboxes = _get_inboxes_for_auth(auth, data.inbox_ids)
     sender_ids = _sender_email_ids_from_inboxes(inboxes, "Warmup enable")
     creds = _get_org_provider_config(auth.org_id, "emailbison")
@@ -280,6 +295,7 @@ async def disable_inbox_warmup(
     data: InboxWarmupBulkToggleRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_inboxes_write(auth)
     inboxes = _get_inboxes_for_auth(auth, data.inbox_ids)
     sender_ids = _sender_email_ids_from_inboxes(inboxes, "Warmup disable")
     creds = _get_org_provider_config(auth.org_id, "emailbison")
@@ -303,6 +319,7 @@ async def update_inbox_warmup_daily_limits(
     data: InboxWarmupBulkLimitRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_inboxes_write(auth)
     inboxes = _get_inboxes_for_auth(auth, data.inbox_ids)
     sender_ids = _sender_email_ids_from_inboxes(inboxes, "Warmup limit update")
     creds = _get_org_provider_config(auth.org_id, "emailbison")
@@ -324,6 +341,7 @@ async def check_inbox_mx_records(
     inbox_id: str,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_inboxes_write(auth)
     inbox = _get_inbox_for_auth(auth, inbox_id)
     if inbox["provider_slug"] != "emailbison":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Healthcheck unavailable for this provider")
@@ -343,7 +361,8 @@ async def check_inbox_mx_records(
 async def bulk_check_inbox_mx_records_missing(
     auth: AuthContext = Depends(get_current_auth),
 ):
-    if auth.company_id or auth.role != "admin":
+    _require_inboxes_write(auth)
+    if auth.company_id or auth.role != "org_admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
     creds = _get_org_provider_config(auth.org_id, "emailbison")
     try:

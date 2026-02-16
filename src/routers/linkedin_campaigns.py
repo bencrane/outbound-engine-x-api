@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from src.auth import AuthContext, get_current_auth
+from src.auth import AuthContext, get_current_auth, has_permission
 from src.db import supabase
 from src.domain.normalization import normalize_campaign_status, normalize_lead_status
 from src.domain.provider_errors import provider_error_detail, provider_error_http_status
@@ -41,6 +41,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _require_campaigns_read(auth: AuthContext) -> None:
+    if not has_permission(auth, "campaigns.read"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: campaigns.read")
+
+
+def _require_campaigns_write(auth: AuthContext) -> None:
+    if not has_permission(auth, "campaigns.write"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: campaigns.write")
+
+
 def _raise_provider_http_error(operation: str, exc: HeyReachProviderError) -> None:
     raise HTTPException(
         status_code=provider_error_http_status(exc),
@@ -49,11 +59,12 @@ def _raise_provider_http_error(operation: str, exc: HeyReachProviderError) -> No
 
 
 def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
+    _require_campaigns_write(auth)
     if auth.company_id:
         if company_id and company_id != auth.company_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
         return auth.company_id
-    if auth.role != "admin":
+    if auth.role != "org_admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
     if not company_id:
         raise HTTPException(
@@ -69,6 +80,7 @@ def _resolve_company_scope(
     company_id: str | None,
     all_companies: bool,
 ) -> str | None:
+    _require_campaigns_read(auth)
     if auth.company_id:
         if all_companies:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="All-companies view is admin only")
@@ -76,7 +88,7 @@ def _resolve_company_scope(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
         return auth.company_id
 
-    if auth.role != "admin":
+    if auth.role != "org_admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
 
     if all_companies:
@@ -166,6 +178,7 @@ def _get_org_heyreach_api_key(org_id: str) -> str:
 
 
 def _get_campaign_for_auth(auth: AuthContext, campaign_id: str) -> dict[str, Any]:
+    _require_campaigns_read(auth)
     query = (
         supabase.table("company_campaigns")
         .select("id, org_id, company_id, provider_id, external_campaign_id, name, status, created_by_user_id, created_at, updated_at")
@@ -357,6 +370,7 @@ async def mutate_linkedin_campaign_status(
     data: LinkedinCampaignActionRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     api_key = _get_org_heyreach_api_key(auth.org_id)
     try:
@@ -385,6 +399,7 @@ async def add_linkedin_campaign_leads(
     data: LinkedinCampaignLeadsAddRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     api_key = _get_org_heyreach_api_key(auth.org_id)
     try:
@@ -442,6 +457,7 @@ async def update_linkedin_campaign_lead_status(
     data: LinkedinLeadStatusUpdateRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     lead = _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
     api_key = _get_org_heyreach_api_key(auth.org_id)
     try:
@@ -467,6 +483,7 @@ async def send_linkedin_campaign_message(
     data: LinkedinSendMessageRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
+    _require_campaigns_write(auth)
     campaign = _get_campaign_for_auth(auth, campaign_id)
     lead = _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
     api_key = _get_org_heyreach_api_key(auth.org_id)

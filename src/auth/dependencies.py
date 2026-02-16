@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, Header, HTTPException, status
 from src.auth.context import AuthContext, SuperAdminContext
 from src.auth.jwt import decode_access_token, decode_super_admin_token
+from src.auth.permissions import is_org_admin_role, role_has_permission
 from src.db import supabase
 
 
@@ -203,9 +204,31 @@ async def get_current_super_admin(authorization: str | None = Header(None)) -> S
 
 async def require_org_admin(auth: AuthContext = Depends(get_current_auth)) -> AuthContext:
     """Authorization dependency for org-admin-only tenant management endpoints."""
-    if auth.role != "admin":
+    if not is_org_admin(auth):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin role required",
         )
     return auth
+
+
+def is_org_admin(auth: AuthContext) -> bool:
+    return is_org_admin_role(auth.role)
+
+
+def require_permission(permission_key: str):
+    async def _require(auth: AuthContext = Depends(get_current_auth)) -> AuthContext:
+        if permission_key not in auth.permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission required: {permission_key}",
+            )
+        return auth
+
+    return _require
+
+
+def has_permission(auth: AuthContext, permission_key: str) -> bool:
+    if permission_key in auth.permissions:
+        return True
+    return role_has_permission(auth.role, permission_key)

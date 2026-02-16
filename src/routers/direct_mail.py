@@ -124,7 +124,7 @@ def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
         return auth.company_id
 
-    if auth.role != "admin":
+    if auth.role != "org_admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
     if not company_id:
         raise HTTPException(
