@@ -40,6 +40,14 @@ If a new public EmailBison client method is added without registry entry, tests 
 - `GET /api/campaigns/{campaign_id}/sender-emails` -> `get_campaign_sender_emails()`
 - `GET /api/campaigns/{campaign_id}/line-area-chart-stats` -> `get_campaign_line_area_chart_stats()`
 
+## Slice 3 Coverage (Inbox + Replies)
+
+- `GET /api/replies` -> `list_replies()`
+- `GET /api/replies/{id}` -> `get_reply()`
+- `GET /api/replies/{reply_id}/conversation-thread` -> `get_reply_conversation_thread()`
+- `GET /api/campaigns/{campaign_id}/replies` -> `list_campaign_replies()`
+- `GET /api/leads/{lead_id}/replies` -> `list_lead_replies()`
+
 ## Guardrails
 
 - Phase 3 webhook signature verification remains blocked until `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16` is resolved.

@@ -60,6 +60,9 @@ from src.providers.emailbison.client import (
     get_campaign_schedule as emailbison_get_campaign_schedule,
     get_campaign_sequence_steps as emailbison_get_campaign_sequence_steps,
     get_campaign_stats as emailbison_get_campaign_stats,
+    get_reply as emailbison_get_reply,
+    get_reply_conversation_thread as emailbison_get_reply_conversation_thread,
+    list_campaign_replies as emailbison_list_campaign_replies,
     list_campaign_leads as emailbison_list_campaign_leads,
     list_replies as emailbison_list_replies,
     stop_future_emails_for_leads as emailbison_stop_future_emails_for_leads,
@@ -1064,7 +1067,7 @@ async def list_campaign_replies(
                 campaign_id=campaign["external_campaign_id"],
             )
         elif provider_slug == "emailbison":
-            replies = emailbison_list_replies(
+            replies = emailbison_list_campaign_replies(
                 api_key=provider_credentials["api_key"],
                 instance_url=provider_credentials.get("instance_url"),
                 campaign_id=campaign["external_campaign_id"],
@@ -1141,6 +1144,60 @@ async def list_campaign_lead_messages(
         "company_campaign_lead_id", lead_id
     ).is_("deleted_at", "null").execute()
     return result.data
+
+
+@router.get("/{campaign_id}/replies/{reply_id}")
+async def get_campaign_reply_detail(
+    campaign_id: str,
+    reply_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
+
+    if provider_slug != "emailbison":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Reply detail is unsupported for provider: {provider_slug}",
+        )
+    try:
+        reply = emailbison_get_reply(
+            api_key=provider_credentials["api_key"],
+            instance_url=provider_credentials.get("instance_url"),
+            reply_id=reply_id,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("emailbison", "campaign_reply_detail_fetch", exc)
+
+    return {"campaign_id": campaign_id, "provider": provider_slug, "reply": reply}
+
+
+@router.get("/{campaign_id}/replies/{reply_id}/thread")
+async def get_campaign_reply_thread(
+    campaign_id: str,
+    reply_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
+
+    if provider_slug != "emailbison":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Reply thread is unsupported for provider: {provider_slug}",
+        )
+    try:
+        thread = emailbison_get_reply_conversation_thread(
+            api_key=provider_credentials["api_key"],
+            instance_url=provider_credentials.get("instance_url"),
+            reply_id=reply_id,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("emailbison", "campaign_reply_thread_fetch", exc)
+
+    return {"campaign_id": campaign_id, "provider": provider_slug, "thread": thread}
 
 
 @router.get("/{campaign_id}/analytics/summary", response_model=CampaignAnalyticsSummaryResponse)

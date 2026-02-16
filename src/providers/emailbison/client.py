@@ -676,20 +676,41 @@ def remove_leads_from_campaign(
 
 def list_replies(
     api_key: str,
+    search: str | None = None,
+    status: str | None = None,
+    folder: str | None = None,
+    read: bool | None = None,
     campaign_id: int | str | None = None,
+    sender_email_id: int | None = None,
+    lead_id: int | None = None,
+    tag_ids: list[int] | None = None,
     instance_url: str | None = None,
     timeout_seconds: float = 12.0,
 ) -> list[dict[str, Any]]:
-    params: dict[str, Any] | None = None
+    params: dict[str, Any] = {}
+    if search is not None:
+        params["search"] = search
+    if status is not None:
+        params["status"] = status
+    if folder is not None:
+        params["folder"] = folder
+    if read is not None:
+        params["read"] = read
     if campaign_id is not None:
-        params = {"campaign_id": campaign_id}
+        params["campaign_id"] = campaign_id
+    if sender_email_id is not None:
+        params["sender_email_id"] = sender_email_id
+    if lead_id is not None:
+        params["lead_id"] = lead_id
+    if tag_ids is not None:
+        params["tag_ids"] = tag_ids
     data = _request_json(
         method="GET",
         candidate_paths=[_EP_REPLIES],
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
-        params=params,
+        params=params or None,
     )
     if isinstance(data, list):
         return data
@@ -771,6 +792,82 @@ def delete_webhook(
     raise EmailBisonProviderError("Unexpected EmailBison webhook delete response type")
 
 
+def get_reply(
+    api_key: str,
+    reply_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"/api/replies/{reply_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison get reply response type")
+
+
+def get_reply_conversation_thread(
+    api_key: str,
+    reply_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"/api/replies/{reply_id}/conversation-thread"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison reply thread response type")
+
+
+def list_campaign_replies(
+    api_key: str,
+    campaign_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/replies"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison campaign replies response shape")
+
+
+def list_lead_replies(
+    api_key: str,
+    lead_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"/api/leads/{lead_id}/replies"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison lead replies response shape")
+
+
 EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     "validate_api_key": [{"method": "GET", "path": _EP_USERS}],
     "list_campaigns": [{"method": "GET", "path": _EP_CAMPAIGNS}],
@@ -802,6 +899,10 @@ EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     "stop_future_emails_for_leads": [{"method": "POST", "path": "/api/campaigns/{campaign_id}/leads/stop-future-emails"}],
     "remove_leads_from_campaign": [{"method": "DELETE", "path": "/api/campaigns/{campaign_id}/leads"}],
     "list_replies": [{"method": "GET", "path": _EP_REPLIES}],
+    "get_reply": [{"method": "GET", "path": "/api/replies/{id}"}],
+    "get_reply_conversation_thread": [{"method": "GET", "path": "/api/replies/{reply_id}/conversation-thread"}],
+    "list_campaign_replies": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/replies"}],
+    "list_lead_replies": [{"method": "GET", "path": "/api/leads/{lead_id}/replies"}],
     "get_campaign_stats": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/stats"}],
     "list_sender_emails": [{"method": "GET", "path": _EP_SENDER_EMAILS}],
     "delete_webhook": [{"method": "DELETE", "path": "/api/webhook-url/{id}"}],

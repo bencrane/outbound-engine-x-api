@@ -954,7 +954,7 @@ def test_list_campaign_replies_dispatches_to_emailbison(monkeypatch):
     monkeypatch.setattr(campaigns_router, "supabase", fake_db)
     monkeypatch.setattr(
         campaigns_router,
-        "emailbison_list_replies",
+        "emailbison_list_campaign_replies",
         lambda **kwargs: [{"id": 501, "subject": "Re: hello", "body": "reply", "lead_id": 9001}],
     )
     _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
@@ -995,7 +995,7 @@ def test_list_campaign_replies_skips_malformed_provider_payload(monkeypatch):
     # Missing message `id` means normalization extractor will drop this payload.
     monkeypatch.setattr(
         campaigns_router,
-        "emailbison_list_replies",
+        "emailbison_list_campaign_replies",
         lambda **kwargs: [{"subject": "Re: hello", "body": "reply", "lead_id": 9001}],
     )
     _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
@@ -1004,6 +1004,78 @@ def test_list_campaign_replies_skips_malformed_provider_payload(monkeypatch):
     response = client.get("/api/campaigns/cmp-1/replies")
     assert response.status_code == 200
     assert response.json() == []
+
+    _clear()
+
+
+def test_get_campaign_reply_detail_emailbison(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "321",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(campaigns_router, "emailbison_get_reply", lambda **kwargs: {"id": 77, "subject": "Re: hello"})
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-1/replies/77")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "emailbison"
+    assert body["reply"]["id"] == 77
+
+    _clear()
+
+
+def test_get_campaign_reply_thread_emailbison(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "321",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_get_reply_conversation_thread",
+        lambda **kwargs: {"current_reply": {"id": 77}, "older_messages": []},
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-1/replies/77/thread")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "emailbison"
+    assert body["thread"]["current_reply"]["id"] == 77
 
     _clear()
 

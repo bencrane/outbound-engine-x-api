@@ -239,6 +239,53 @@ def test_get_and_create_campaign_schedule_use_schedule_endpoint(monkeypatch):
     assert calls[1] == ("POST", "https://x.example/api/campaigns/99/schedule", {"monday": True})
 
 
+def test_get_reply_and_thread_endpoints(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"]))
+        if kwargs["url"].endswith("/conversation-thread"):
+            return _FakeResponse(200, {"data": {"current_reply": {"id": 7}}})
+        return _FakeResponse(200, {"data": {"id": 7, "subject": "Re: hello"}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    reply = emailbison_client.get_reply(
+        api_key="k",
+        reply_id=7,
+        instance_url="https://x.example",
+    )
+    thread = emailbison_client.get_reply_conversation_thread(
+        api_key="k",
+        reply_id=7,
+        instance_url="https://x.example",
+    )
+
+    assert reply["id"] == 7
+    assert thread["current_reply"]["id"] == 7
+    assert calls == [
+        ("GET", "https://x.example/api/replies/7"),
+        ("GET", "https://x.example/api/replies/7/conversation-thread"),
+    ]
+
+
+def test_list_campaign_replies_uses_campaign_endpoint(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"]))
+        return _FakeResponse(200, {"data": [{"id": 50}]})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    replies = emailbison_client.list_campaign_replies(
+        api_key="k",
+        campaign_id=90,
+        instance_url="https://x.example",
+    )
+
+    assert replies == [{"id": 50}]
+    assert calls == [("GET", "https://x.example/api/campaigns/90/replies")]
+
+
 def test_registry_covers_all_public_client_methods():
     excluded = {"webhook_resource_paths"}
     public_callables = {
