@@ -597,6 +597,59 @@ def test_list_campaign_replies_with_provider_sync(monkeypatch):
     _clear()
 
 
+def test_list_campaign_replies_dispatches_to_emailbison(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "321",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    tables["company_campaign_messages"] = []
+    tables["company_campaign_leads"] = [
+        {
+            "id": "lead-local-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "company_campaign_id": "cmp-1",
+            "provider_id": "prov-emailbison",
+            "external_lead_id": "9001",
+            "status": "active",
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_list_replies",
+        lambda **kwargs: [{"id": 501, "subject": "Re: hello", "body": "reply", "lead_id": 9001}],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-1/replies")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["direction"] == "inbound"
+    assert data[0]["subject"] == "Re: hello"
+
+    _clear()
+
+
 def test_list_campaign_lead_messages_with_provider_sync(monkeypatch):
     tables = _base_tables()
     tables["company_campaigns"] = [
@@ -746,6 +799,116 @@ def test_create_campaign_maps_transient_provider_errors_to_503(monkeypatch):
     assert detail["category"] == "transient"
     assert detail["retryable"] is True
     assert "503" in detail["message"]
+    _clear()
+
+
+def test_create_campaign_maps_emailbison_terminal_provider_errors_to_502(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_entitlements"][0]["provider_id"] = "prov-emailbison"
+    tables["company_entitlements"][0]["provider_config"] = {}
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+
+    def _raise_terminal(**kwargs):
+        raise campaigns_router.EmailBisonProviderError("Invalid EmailBison API key")
+
+    monkeypatch.setattr(campaigns_router, "emailbison_create_campaign", _raise_terminal)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/campaigns/", json={"name": "EmailBison terminal"})
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["type"] == "provider_error"
+    assert detail["provider"] == "emailbison"
+    assert detail["operation"] == "campaign_create"
+    assert detail["category"] == "terminal"
+    assert detail["retryable"] is False
+    assert "Invalid EmailBison API key" in detail["message"]
+    _clear()
+
+
+def test_update_campaign_status_maps_emailbison_transient_provider_errors_to_503(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-eb-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "701",
+            "name": "EmailBison Campaign",
+            "status": "DRAFTED",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+
+    def _raise_transient(**kwargs):
+        raise campaigns_router.EmailBisonProviderError("EmailBison API returned HTTP 503: upstream unavailable")
+
+    monkeypatch.setattr(campaigns_router, "emailbison_update_campaign_status", _raise_transient)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/campaigns/cmp-eb-1/status", json={"status": "ACTIVE"})
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["type"] == "provider_error"
+    assert detail["provider"] == "emailbison"
+    assert detail["operation"] == "campaign_status_update"
+    assert detail["category"] == "transient"
+    assert detail["retryable"] is True
+    assert "503" in detail["message"]
+    _clear()
+
+
+def test_campaign_analytics_provider_dispatches_to_emailbison(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-eb-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "701",
+            "name": "EmailBison Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_get_campaign_stats",
+        lambda **kwargs: {"sent": 20, "opened": 12, "replied": 4, "bounced": 1},
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-eb-1/analytics/provider")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "emailbison"
+    assert body["normalized"]["sent"] == 20
+    assert body["normalized"]["opened"] == 12
+    assert body["normalized"]["replied"] == 4
+    assert body["normalized"]["bounced"] == 1
     _clear()
 
 

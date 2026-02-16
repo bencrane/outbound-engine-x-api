@@ -67,20 +67,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _provider_error_status(exc: SmartleadProviderError) -> int:
-    return provider_error_http_status(exc)
-
-
-def _provider_error_detail(operation: str, exc: SmartleadProviderError) -> dict[str, Any]:
-    return provider_error_detail(provider="smartlead", operation=operation, exc=exc)
-
-
-def _emailbison_provider_error_status(exc: EmailBisonProviderError) -> int:
-    return provider_error_http_status(exc)
-
-
-def _emailbison_provider_error_detail(operation: str, exc: EmailBisonProviderError) -> dict[str, Any]:
-    return provider_error_detail(provider="emailbison", operation=operation, exc=exc)
+def _raise_provider_http_error(
+    provider: str,
+    operation: str,
+    exc: SmartleadProviderError | EmailBisonProviderError,
+) -> None:
+    raise HTTPException(
+        status_code=provider_error_http_status(exc),
+        detail=provider_error_detail(provider=provider, operation=operation, exc=exc),
+    ) from exc
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -375,10 +370,7 @@ async def create_campaign(
                 client_id=int(smartlead_client_id),
             )
         except SmartleadProviderError as exc:
-            raise HTTPException(
-                status_code=_provider_error_status(exc),
-                detail=_provider_error_detail("campaign_create", exc),
-            ) from exc
+            _raise_provider_http_error("smartlead", "campaign_create", exc)
     elif provider["slug"] == "emailbison":
         provider_credentials = _get_org_provider_config(auth.org_id, "emailbison")
         try:
@@ -388,10 +380,7 @@ async def create_campaign(
                 name=data.name,
             )
         except EmailBisonProviderError as exc:
-            raise HTTPException(
-                status_code=_emailbison_provider_error_status(exc),
-                detail=_emailbison_provider_error_detail("campaign_create", exc),
-            ) from exc
+            _raise_provider_http_error("emailbison", "campaign_create", exc)
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -535,10 +524,7 @@ async def update_campaign_status(
                 status_value=data.status,
             )
         except SmartleadProviderError as exc:
-            raise HTTPException(
-                status_code=_provider_error_status(exc),
-                detail=_provider_error_detail("campaign_status_update", exc),
-            ) from exc
+            _raise_provider_http_error("smartlead", "campaign_status_update", exc)
     elif provider_slug == "emailbison":
         try:
             provider_response = emailbison_update_campaign_status(
@@ -548,10 +534,7 @@ async def update_campaign_status(
                 status_value=data.status,
             )
         except EmailBisonProviderError as exc:
-            raise HTTPException(
-                status_code=_emailbison_provider_error_status(exc),
-                detail=_emailbison_provider_error_detail("campaign_status_update", exc),
-            ) from exc
+            _raise_provider_http_error("emailbison", "campaign_status_update", exc)
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -596,10 +579,7 @@ async def get_campaign_sequence(
                 version=latest["version"],
                 updated_at=latest["updated_at"],
             )
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_sequence_fetch", exc),
-        ) from exc
+        _raise_provider_http_error("smartlead", "campaign_sequence_fetch", exc)
 
     snapshots = supabase.table("company_campaign_sequences").select(
         "version"
@@ -642,10 +622,7 @@ async def save_campaign_sequence(
             sequence=data.sequence,
         )
     except SmartleadProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_sequence_save", exc),
-        ) from exc
+        _raise_provider_http_error("smartlead", "campaign_sequence_save", exc)
 
     snapshots = supabase.table("company_campaign_sequences").select(
         "version"
@@ -742,15 +719,9 @@ async def add_campaign_leads(
                 detail=f"Unsupported email_outreach provider: {provider_slug}",
             )
     except SmartleadProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_leads_add", exc),
-        ) from exc
+        _raise_provider_http_error("smartlead", "campaign_leads_add", exc)
     except EmailBisonProviderError as exc:
-        raise HTTPException(
-            status_code=_emailbison_provider_error_status(exc),
-            detail=_emailbison_provider_error_detail("campaign_leads_add", exc),
-        ) from exc
+        _raise_provider_http_error("emailbison", "campaign_leads_add", exc)
 
     added_emails = {lead.email.lower() for lead in data.leads}
     affected = 0
@@ -825,15 +796,9 @@ async def pause_campaign_lead(
                 detail=f"Unsupported email_outreach provider: {provider_slug}",
             )
     except SmartleadProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_lead_pause", exc),
-        ) from exc
+        _raise_provider_http_error("smartlead", "campaign_lead_pause", exc)
     except EmailBisonProviderError as exc:
-        raise HTTPException(
-            status_code=_emailbison_provider_error_status(exc),
-            detail=_emailbison_provider_error_detail("campaign_lead_pause", exc),
-        ) from exc
+        _raise_provider_http_error("emailbison", "campaign_lead_pause", exc)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -874,10 +839,7 @@ async def resume_campaign_lead(
                 detail=f"Unsupported email_outreach provider: {provider_slug}",
             )
     except SmartleadProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_lead_resume", exc),
-        ) from exc
+        _raise_provider_http_error("smartlead", "campaign_lead_resume", exc)
 
     supabase.table("company_campaign_leads").update(
         {"status": "active", "updated_at": _now_iso()}
@@ -915,15 +877,9 @@ async def unsubscribe_campaign_lead(
                 detail=f"Unsupported email_outreach provider: {provider_slug}",
             )
     except SmartleadProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_lead_unsubscribe", exc),
-        ) from exc
+        _raise_provider_http_error("smartlead", "campaign_lead_unsubscribe", exc)
     except EmailBisonProviderError as exc:
-        raise HTTPException(
-            status_code=_emailbison_provider_error_status(exc),
-            detail=_emailbison_provider_error_detail("campaign_lead_unsubscribe", exc),
-        ) from exc
+        _raise_provider_http_error("emailbison", "campaign_lead_unsubscribe", exc)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1113,15 +1069,9 @@ async def get_campaign_analytics_provider(
                 detail=f"Unsupported email_outreach provider: {provider_slug}",
             )
     except SmartleadProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_analytics_fetch", exc),
-        ) from exc
+        _raise_provider_http_error("smartlead", "campaign_analytics_fetch", exc)
     except EmailBisonProviderError as exc:
-        raise HTTPException(
-            status_code=_emailbison_provider_error_status(exc),
-            detail=_emailbison_provider_error_detail("campaign_analytics_fetch", exc),
-        ) from exc
+        _raise_provider_http_error("emailbison", "campaign_analytics_fetch", exc)
 
     normalized = {
         "sent": raw.get("sent_count") or raw.get("sent") or raw.get("total_sent"),

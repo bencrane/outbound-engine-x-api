@@ -41,12 +41,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _provider_error_status(exc: HeyReachProviderError) -> int:
-    return provider_error_http_status(exc)
-
-
-def _provider_error_detail(operation: str, exc: HeyReachProviderError) -> dict[str, Any]:
-    return provider_error_detail(provider="heyreach", operation=operation, exc=exc)
+def _raise_provider_http_error(operation: str, exc: HeyReachProviderError) -> None:
+    raise HTTPException(
+        status_code=provider_error_http_status(exc),
+        detail=provider_error_detail(provider="heyreach", operation=operation, exc=exc),
+    ) from exc
 
 
 def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
@@ -290,10 +289,7 @@ async def create_linkedin_campaign(
             delay_between_actions=data.delay_between_actions,
         )
     except HeyReachProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_create", exc),
-        ) from exc
+        _raise_provider_http_error("campaign_create", exc)
 
     external_campaign_id = provider_campaign.get("id") or provider_campaign.get("campaignId")
     if external_campaign_id is None:
@@ -371,10 +367,7 @@ async def mutate_linkedin_campaign_status(
             provider_response = heyreach_resume_campaign(api_key=api_key, campaign_id=campaign["external_campaign_id"])
             next_status = "ACTIVE"
     except HeyReachProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_action", exc),
-        ) from exc
+        _raise_provider_http_error("campaign_action", exc)
 
     updated = (
         supabase.table("company_campaigns")
@@ -407,10 +400,7 @@ async def add_linkedin_campaign_leads(
             limit=500,
         )
     except HeyReachProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_leads_add", exc),
-        ) from exc
+        _raise_provider_http_error("campaign_leads_add", exc)
 
     incoming = {lead.email.lower() for lead in data.leads}
     affected = 0
@@ -457,10 +447,7 @@ async def update_linkedin_campaign_lead_status(
     try:
         heyreach_update_lead_status(api_key=api_key, lead_id=lead["external_lead_id"], status_value=data.status)
     except HeyReachProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_lead_status_update", exc),
-        ) from exc
+        _raise_provider_http_error("campaign_lead_status_update", exc)
 
     normalized = normalize_lead_status(data.status)
     (
@@ -491,10 +478,7 @@ async def send_linkedin_campaign_message(
             template_id=data.template_id,
         )
     except HeyReachProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_message_send", exc),
-        ) from exc
+        _raise_provider_http_error("campaign_message_send", exc)
 
     external_message_id = str(provider.get("messageId") or provider.get("id") or f"local-{datetime.now(timezone.utc).timestamp()}")
     row = (
@@ -528,10 +512,7 @@ async def get_linkedin_campaign_metrics(campaign_id: str, auth: AuthContext = De
     try:
         raw = heyreach_get_campaign_metrics(api_key=api_key, campaign_id=campaign["external_campaign_id"])
     except HeyReachProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("campaign_metrics_fetch", exc),
-        ) from exc
+        _raise_provider_http_error("campaign_metrics_fetch", exc)
 
     normalized = {
         "total_leads": raw.get("totalLeads"),

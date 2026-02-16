@@ -28,20 +28,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _provider_error_status(exc: SmartleadProviderError) -> int:
-    return provider_error_http_status(exc)
-
-
-def _provider_error_detail(operation: str, exc: SmartleadProviderError) -> dict[str, Any]:
-    return provider_error_detail(provider="smartlead", operation=operation, exc=exc)
-
-
-def _emailbison_provider_error_status(exc: EmailBisonProviderError) -> int:
-    return provider_error_http_status(exc)
-
-
-def _emailbison_provider_error_detail(operation: str, exc: EmailBisonProviderError) -> dict[str, Any]:
-    return provider_error_detail(provider="emailbison", operation=operation, exc=exc)
+def _raise_provider_http_error(
+    provider: str,
+    operation: str,
+    exc: SmartleadProviderError | EmailBisonProviderError,
+) -> None:
+    raise HTTPException(
+        status_code=provider_error_http_status(exc),
+        detail=provider_error_detail(provider=provider, operation=operation, exc=exc),
+    ) from exc
 
 
 def _get_company(company_id: str) -> dict[str, Any]:
@@ -184,10 +179,7 @@ async def provision_email_outreach(
                 "updated_at": _now_iso(),
             }
         ).eq("id", entitlement["id"]).eq("org_id", company["org_id"]).execute()
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("email_outreach_provision", exc),
-        ) from exc
+        _raise_provider_http_error("smartlead", "email_outreach_provision", exc)
     except EmailBisonProviderError as exc:
         provider_config.update(
             {
@@ -204,10 +196,7 @@ async def provision_email_outreach(
                 "updated_at": _now_iso(),
             }
         ).eq("id", entitlement["id"]).eq("org_id", company["org_id"]).execute()
-        raise HTTPException(
-            status_code=_emailbison_provider_error_status(exc),
-            detail=_emailbison_provider_error_detail("email_outreach_provision", exc),
-        ) from exc
+        _raise_provider_http_error("emailbison", "email_outreach_provision", exc)
 
     provider_config.update(
         {
@@ -316,15 +305,9 @@ async def sync_email_outreach_inboxes(
                 detail=f"Unsupported email_outreach provider: {provider['slug']}",
             )
     except SmartleadProviderError as exc:
-        raise HTTPException(
-            status_code=_provider_error_status(exc),
-            detail=_provider_error_detail("email_outreach_inbox_sync", exc),
-        ) from exc
+        _raise_provider_http_error("smartlead", "email_outreach_inbox_sync", exc)
     except EmailBisonProviderError as exc:
-        raise HTTPException(
-            status_code=_emailbison_provider_error_status(exc),
-            detail=_emailbison_provider_error_detail("email_outreach_inbox_sync", exc),
-        ) from exc
+        _raise_provider_http_error("emailbison", "email_outreach_inbox_sync", exc)
 
     synced_count = 0
     skipped_count = 0

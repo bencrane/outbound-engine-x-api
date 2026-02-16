@@ -183,6 +183,45 @@ def test_provision_email_outreach_failed_on_provider_validation(monkeypatch):
     _clear_overrides()
 
 
+def test_provision_emailbison_failed_on_provider_validation(monkeypatch):
+    fake_db = FakeSupabase(
+        {
+            "companies": [{"id": "c-1", "org_id": "org-1", "deleted_at": None}],
+            "capabilities": [{"id": "cap-email", "slug": "email_outreach"}],
+            "providers": [{"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"}],
+            "organizations": [
+                {
+                    "id": "org-1",
+                    "deleted_at": None,
+                    "provider_configs": {"emailbison": {"api_key": "bad-key", "instance_url": "https://eb.example"}},
+                }
+            ],
+            "company_entitlements": [],
+        }
+    )
+    monkeypatch.setattr(provisioning_router, "supabase", fake_db)
+
+    def _raise(**kwargs):
+        raise provisioning_router.EmailBisonProviderError("Invalid EmailBison API key")
+
+    monkeypatch.setattr(provisioning_router, "emailbison_validate_api_key", _raise)
+    _set_super_admin_override()
+
+    client = TestClient(app)
+    response = client.post("/api/internal/provisioning/email-outreach/c-1", json={"provider": "emailbison"})
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["type"] == "provider_error"
+    assert detail["provider"] == "emailbison"
+    assert detail["operation"] == "email_outreach_provision"
+    assert detail["category"] == "terminal"
+    assert detail["retryable"] is False
+    assert "Invalid EmailBison API key" in detail["message"]
+
+    _clear_overrides()
+
+
 def test_get_provisioning_status(monkeypatch):
     fake_db = FakeSupabase(
         {

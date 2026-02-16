@@ -226,6 +226,7 @@ Rationale: no architectural dead-end exists, but provider dispatch refactor, Ema
 Implementation gates:
 - Phase 2 gate: status-write contract confirmed from live spec (`PATCH pause/resume/archive`). Remaining write-path hardening should follow this contract.
 - Phase 3 gate: inbound webhook signature contract is **not yet published in current live MCP/spec outputs**; lock verification code until header/algorithm/canonicalization/replay contract is confirmed via updated live sources or vendor support.
+- Phase 3 contract ticket: `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16` (link pending provider submission/response)
 
 ## 4) Prioritized Implementation Plan (Phase 1 / 2 / 3)
 
