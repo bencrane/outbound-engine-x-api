@@ -16,7 +16,7 @@ Purpose: strict proof of what Lob endpoints are implemented in this repo for `di
 - Contract status registry constant: `src/providers/lob/client.py` -> `LOB_CONTRACT_STATUS_REGISTRY`
 - Guard test: `tests/test_lob_client.py::test_registry_covers_all_public_client_methods`
 
-Stage 4 note: Lob provider client foundation, direct-mail capability workflows, webhook ingestion/projection/replay, and operator hardening are implemented. Signature crypto verification remains blocked by contract.
+Stage 4/v2-2 note: Lob provider client foundation, direct-mail capability workflows (postcards/letters/self-mailers/checks), webhook ingestion/projection/replay, operator hardening, and webhook signature verification are implemented.
 
 ## Registry Rows (Stage 0 Baseline)
 
@@ -36,29 +36,27 @@ Stage 4 note: Lob provider client foundation, direct-mail capability workflows, 
 | Letters | GET | `/v1/letters` | `list_letters()` | implemented | Stage 2 routed via `/api/direct-mail/letters` |
 | Letters | GET | `/v1/letters/{ltr_id}` | `get_letter()` | implemented | Stage 2 routed via `/api/direct-mail/letters/{piece_id}` |
 | Letters | DELETE | `/v1/letters/{ltr_id}` | `cancel_letter()` | implemented | Stage 2 routed via `/api/direct-mail/letters/{piece_id}/cancel` |
-| Self-mailers | POST | `/v1/self_mailers` | `create_self_mailer()` | deferred | out of v1 scope |
-| Self-mailers | GET | `/v1/self_mailers` | `list_self_mailers()` | deferred | out of v1 scope |
-| Self-mailers | GET | `/v1/self_mailers/{sfm_id}` | `get_self_mailer()` | deferred | out of v1 scope |
-| Self-mailers | DELETE | `/v1/self_mailers/{sfm_id}` | `delete_self_mailer()` | deferred | out of v1 scope |
-| Checks | POST | `/v1/checks` | `create_check()` | deferred | out of v1 scope |
-| Checks | GET | `/v1/checks` | `list_checks()` | deferred | out of v1 scope |
-| Checks | GET | `/v1/checks/{chk_id}` | `get_check()` | deferred | out of v1 scope |
-| Checks | DELETE | `/v1/checks/{chk_id}` | `cancel_check()` | deferred | out of v1 scope |
+| Self-mailers | POST | `/v1/self_mailers` | `create_self_mailer()` | implemented | V2 Stage 2 routed via `/api/direct-mail/self-mailers` |
+| Self-mailers | GET | `/v1/self_mailers` | `list_self_mailers()` | implemented | V2 Stage 2 routed via `/api/direct-mail/self-mailers` |
+| Self-mailers | GET | `/v1/self_mailers/{sfm_id}` | `get_self_mailer()` | implemented | V2 Stage 2 routed via `/api/direct-mail/self-mailers/{piece_id}` |
+| Self-mailers | DELETE | `/v1/self_mailers/{sfm_id}` | `cancel_self_mailer()` | implemented | V2 Stage 2 routed via `/api/direct-mail/self-mailers/{piece_id}/cancel` |
+| Checks | POST | `/v1/checks` | `create_check()` | implemented | V2 Stage 2 routed via `/api/direct-mail/checks` |
+| Checks | GET | `/v1/checks` | `list_checks()` | implemented | V2 Stage 2 routed via `/api/direct-mail/checks` |
+| Checks | GET | `/v1/checks/{chk_id}` | `get_check()` | implemented | V2 Stage 2 routed via `/api/direct-mail/checks/{piece_id}` |
+| Checks | DELETE | `/v1/checks/{chk_id}` | `cancel_check()` | implemented | V2 Stage 2 routed via `/api/direct-mail/checks/{piece_id}/cancel` |
 | Webhooks/events | POST | `/api/webhooks/lob` (inbound) | `ingest_lob_webhook()` | implemented | Stage 3 ingest + dedupe + normalized projection + replay support |
-| Webhooks/events | N/A | signature verification contract | `verify_webhook_signature()` | blocked_contract_missing | exact signing contract not locked |
+| Webhooks/events | N/A | signature verification contract | `verify_webhook_signature()` | implemented | `Lob-Signature` + `Lob-Signature-Timestamp`, HMAC-SHA256 over `<timestamp>.<raw_body>`, timestamp tolerance enforcement |
 | Idempotency | N/A | write-request idempotency contract | `build_idempotency_headers()` | deferred | documented: `Idempotency-Key` header or `idempotency_key` query param, 24h retention, never send both at once |
 
 ## Status Summary
 
-- `implemented`: 11
-- `deferred`: 13
-- `blocked_contract_missing`: 1
+- `implemented`: 20
+- `deferred`: 5
+- `blocked_contract_missing`: 0
 
 ## Blocked Contract Items
 
-- `lob.webhooks.signature_contract` -> `blocked_contract_missing`
-  - Missing exact signature header/algorithm/canonicalization/replay requirements in currently extracted canonical docs.
-  - Stage 3 placeholder reference: `lob.webhooks.signature_contract` (verification mode currently `disabled_pending_contract` in ingest response/audit envelope).
+- None currently.
 
 ## Deferred Contract Items
 
@@ -85,6 +83,17 @@ Stage 4 note: Lob provider client foundation, direct-mail capability workflows, 
 - `GET /api/direct-mail/letters/{piece_id}`
 - `POST /api/direct-mail/letters/{piece_id}/cancel`
 
+## Capability-Facing API (V2 Stage 2)
+
+- `POST /api/direct-mail/self-mailers`
+- `GET /api/direct-mail/self-mailers`
+- `GET /api/direct-mail/self-mailers/{piece_id}`
+- `POST /api/direct-mail/self-mailers/{piece_id}/cancel`
+- `POST /api/direct-mail/checks`
+- `GET /api/direct-mail/checks`
+- `GET /api/direct-mail/checks/{piece_id}`
+- `POST /api/direct-mail/checks/{piece_id}/cancel`
+
 ## Webhook + Replay (Stage 3)
 
 - Inbound endpoint implemented:
@@ -92,7 +101,9 @@ Stage 4 note: Lob provider client foundation, direct-mail capability workflows, 
 - Ingest behavior implemented:
   - provider event dedupe key generation + idempotent persistence in `webhook_events`
   - normalized Lob event projection to direct-mail piece statuses
-  - signature verification mode explicitly set to `disabled_pending_contract` (no crypto verification yet)
+  - signature verification with mode switch:
+    - `permissive_audit` (audit-only)
+    - `enforce` (reject invalid/missing/stale signatures)
 - Super-admin replay surfaces now include `lob`:
   - `POST /api/webhooks/replay/{provider_slug}/{event_key}`
   - `POST /api/webhooks/replay-bulk`
@@ -112,8 +123,10 @@ Stage 4 note: Lob provider client foundation, direct-mail capability workflows, 
 - Stage 0: docs only (completed).
 - Stage 1: provider client skeleton + capability wiring (`direct_mail`) (completed).
 - Stage 2: postcard/letter/address-verification workflows + normalized contracts + dispatch tests (completed).
-- Stage 3: webhook ingestion + idempotent projection + replay support (completed; signature gated).
+- Stage 3: webhook ingestion + idempotent projection + replay support (completed).
 - Stage 4: operator hardening + broader regression + release closure docs (completed).
+- Lob v2 Stage 1: webhook signature verification closure + replay-window enforcement (completed).
+- Lob v2 Stage 2: self-mailers + checks capability rollout with tenant-safe dispatch (completed).
 
 ## Guardrail
 

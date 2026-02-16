@@ -17,6 +17,8 @@ _EP_US_VERIFICATIONS = "/v1/us_verifications"
 _EP_US_BULK_VERIFICATIONS = "/v1/bulk/us_verifications"
 _EP_POSTCARDS = "/v1/postcards"
 _EP_LETTERS = "/v1/letters"
+_EP_SELF_MAILERS = "/v1/self_mailers"
+_EP_CHECKS = "/v1/checks"
 
 
 class LobProviderError(Exception):
@@ -401,6 +403,178 @@ def cancel_letter(
     return data
 
 
+def create_self_mailer(
+    api_key: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        path=_EP_SELF_MAILERS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob create self mailer response type")
+    return data
+
+
+def list_self_mailers(
+    api_key: str,
+    *,
+    params: dict[str, Any] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=_EP_SELF_MAILERS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        params=params,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob list self mailers response type")
+    return data
+
+
+def get_self_mailer(
+    api_key: str,
+    self_mailer_id: str,
+    *,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=f"{_EP_SELF_MAILERS}/{self_mailer_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob get self mailer response type")
+    return data
+
+
+def cancel_self_mailer(
+    api_key: str,
+    self_mailer_id: str,
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        path=f"{_EP_SELF_MAILERS}/{self_mailer_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob cancel self mailer response type")
+    return data
+
+
+def create_check(
+    api_key: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        path=_EP_CHECKS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob create check response type")
+    return data
+
+
+def list_checks(
+    api_key: str,
+    *,
+    params: dict[str, Any] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=_EP_CHECKS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        params=params,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob list checks response type")
+    return data
+
+
+def get_check(
+    api_key: str,
+    check_id: str,
+    *,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=f"{_EP_CHECKS}/{check_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob get check response type")
+    return data
+
+
+def cancel_check(
+    api_key: str,
+    check_id: str,
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        path=f"{_EP_CHECKS}/{check_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob cancel check response type")
+    return data
+
+
 LOB_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     "validate_api_key": [{"method": "GET", "path": _EP_POSTCARDS}],
     "verify_address_us_single": [{"method": "POST", "path": _EP_US_VERIFICATIONS}],
@@ -413,24 +587,32 @@ LOB_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     "list_letters": [{"method": "GET", "path": _EP_LETTERS}],
     "get_letter": [{"method": "GET", "path": "/v1/letters/{ltr_id}"}],
     "cancel_letter": [{"method": "DELETE", "path": "/v1/letters/{ltr_id}"}],
+    "create_self_mailer": [{"method": "POST", "path": _EP_SELF_MAILERS}],
+    "list_self_mailers": [{"method": "GET", "path": _EP_SELF_MAILERS}],
+    "get_self_mailer": [{"method": "GET", "path": "/v1/self_mailers/{sfm_id}"}],
+    "cancel_self_mailer": [{"method": "DELETE", "path": "/v1/self_mailers/{sfm_id}"}],
+    "create_check": [{"method": "POST", "path": _EP_CHECKS}],
+    "list_checks": [{"method": "GET", "path": _EP_CHECKS}],
+    "get_check": [{"method": "GET", "path": "/v1/checks/{chk_id}"}],
+    "cancel_check": [{"method": "DELETE", "path": "/v1/checks/{chk_id}"}],
 }
 
 
 LOB_CONTRACT_STATUS_REGISTRY: dict[str, dict[str, str]] = {
     "lob.webhooks.signature_contract": {
-        "status": "blocked_contract_missing",
-        "evidence": "Missing canonical signing header, algorithm, payload canonicalization, and replay/timestamp contract details in current docs extraction.",
+        "status": "implemented",
+        "evidence": "Webhook signature verification implemented with `Lob-Signature` + `Lob-Signature-Timestamp`, HMAC-SHA256 over `<timestamp>.<raw_body>`, and tolerance-window replay protection.",
     },
     "lob.idempotency.write_contract": {
         "status": "deferred",
         "evidence": "Idempotency is documented: use either `Idempotency-Key` header or `idempotency_key` query param, key retention is 24 hours, never both simultaneously.",
     },
     "lob.self_mailers.workflow": {
-        "status": "deferred",
-        "evidence": "Deferred from v1 operator-grade MVP scope.",
+        "status": "implemented",
+        "evidence": "Self mailer create/list/get/cancel capability routes are implemented via Lob provider adapter.",
     },
     "lob.checks.workflow": {
-        "status": "deferred",
-        "evidence": "Deferred from v1 operator-grade MVP scope.",
+        "status": "implemented",
+        "evidence": "Check create/list/get/cancel capability routes are implemented via Lob provider adapter.",
     },
 }

@@ -13,8 +13,10 @@ Generated: `2026-02-16T03:33:25Z` (UTC)
 - Stage 0 (canonical discovery + planning) is complete.
 - Stage 1 (provider foundation + capability wiring) is implemented.
 - Stage 2 (direct-mail workflow rollout for address verification + postcards + letters) is implemented.
-- Stage 3 (Lob webhook ingestion + idempotent projection + replay glue) is implemented with signature verification intentionally gated.
+- Stage 3 (Lob webhook ingestion + idempotent projection + replay glue) is implemented.
 - Stage 4 (operator hardening + regression sweep + release closure) is implemented.
+- Lob v2 Stage 1 (webhook signature verification closure with mode switch) is implemented.
+- Lob v2 Stage 2 (self-mailers + checks capability expansion) is implemented.
 
 ## 1) Lob Surface Mapped To Internal Capability Model
 
@@ -34,8 +36,8 @@ Provider internals (Lob endpoint names/IDs) stay inside provider adapter + norma
 
 ### Deferred domains (not in v1 operator-grade MVP)
 
-- `direct_mail.self_mailers` -> deferred
-- `direct_mail.checks` -> deferred
+- `direct_mail.self_mailers` -> deferred in v1, implemented in v2 Stage 2
+- `direct_mail.checks` -> deferred in v1, implemented in v2 Stage 2
 
 ### Surfaces explicitly avoided in v1
 
@@ -52,8 +54,8 @@ From `https://docs.lob.com`:
 - US Verifications: single verify, bulk verify (+ test env behavior docs).
 - Postcards: create/retrieve/list/cancel.
 - Letters: create/retrieve/list/cancel.
-- Self Mailers: create/retrieve/list/delete (deferred).
-- Checks: create/retrieve/list/cancel (deferred).
+- Self Mailers: create/retrieve/list/delete.
+- Checks: create/retrieve/list/cancel.
 - Webhooks/Events/Tracking Events: webhook-driven tracking/event delivery model.
 - Appendix includes idempotent requests and request/response conventions.
 
@@ -148,7 +150,7 @@ This is an internal normalization contract, not a client-facing provider leak.
 - Postcards create/list/retrieve/cancel.
 - Letters create/list/retrieve/cancel.
 - Webhook ingestion path for Lob tracking events with:
-  - signature verification once contract is confirmed,
+  - signature verification,
   - idempotent event processing,
   - normalized event projection.
 - Test coverage mirroring existing provider pattern:
@@ -168,15 +170,17 @@ This is an internal normalization contract, not a client-facing provider leak.
 
 ## 7) Contract Gaps / Ambiguities (Stage 0)
 
-Tracked as blockers where implementation requires exact contract details:
+Tracked implementation constraints:
 
-- `lob.webhooks.signature_contract` -> `blocked_contract_missing`
-  - Missing precise canonical details in currently fetchable docs: signing header name(s), algorithm, payload canonicalization rules, replay/timestamp tolerance.
+- Signature verification now implemented using canonical Lob contract:
+  - headers: `Lob-Signature`, `Lob-Signature-Timestamp`
+  - algorithm: HMAC-SHA256 over `<timestamp>.<raw_request_body>`
+  - replay/timestamp tolerance enforcement is configurable
 
 Non-blocking items:
 
 - Core endpoint families and capability mapping are clear for staged implementation.
-- Deferred status for self-mailers/checks is explicit and intentional.
+- Self-mailers/checks were intentionally deferred in v1 and promoted in v2 Stage 2.
 - `lob.idempotency.write_contract` is deferred (not blocked): `Idempotency-Key` header or `idempotency_key` query parameter, 24-hour key retention, never both simultaneously.
 
 ## 8) Staged Implementation Plan (Repo-Aligned)
@@ -228,10 +232,9 @@ Stage 2 implementation status:
 - Added `company_direct_mail_pieces` persistence mapping for tenant-safe piece retrieval/cancel/list behavior.
 - Added targeted endpoint tests for happy paths, auth boundaries, provider dispatch, validation errors, normalized contracts, and provider error-shape behavior.
 
-### Stage 3 - Webhooks + idempotency hardening (implemented, signature gated)
+### Stage 3 - Webhooks + idempotency hardening (implemented)
 
 - Add Lob webhook endpoint in `src/routers/webhooks.py`.
-- Implement signature verification once `lob.webhooks.signature_contract` is resolved.
 - Implement idempotent event ingestion/dedupe and replay protection.
 - Add webhook authorization + dedupe + normalization tests.
 
@@ -247,8 +250,9 @@ Stage 3 implementation status:
   - `piece.created|updated|processed|in_transit|delivered|returned|canceled|re-routed|failed|unknown`
   - projection into `company_direct_mail_pieces.status` + update timestamps
 - Integrated replay support for Lob into existing super-admin replay endpoints (single/bulk/query).
-- Signature verification remains explicitly gated:
-  - processing mode is `disabled_pending_contract` (no cryptographic verification rules implemented yet).
+- Signature verification is implemented and mode-gated for safe rollout:
+  - `permissive_audit`: verification result logged/annotated, request not rejected for signature failure
+  - `enforce`: invalid/missing/stale signatures are rejected deterministically
 
 ### Stage 4 - Operator hardening + deferred scope revisit
 
@@ -269,6 +273,37 @@ Stage 4 implementation status:
 - Added operator runbook and linked operational procedures for replay escalation and diagnostics.
 - Completed broader regression sweep for Lob + existing provider/core suites.
 
+### Lob v2 Stage 1 - Signature verification closure (implemented)
+
+- Implemented cryptographic verification for `POST /api/webhooks/lob`:
+  - uses `Lob-Signature` and `Lob-Signature-Timestamp`
+  - computes expected signature with HMAC-SHA256 over `<timestamp>.<raw_request_body>`
+- Implemented replay/timestamp tolerance enforcement:
+  - configurable tolerance window via settings
+- Added mode switch for safe rollout:
+  - `LOB_WEBHOOK_SIGNATURE_MODE=permissive_audit|enforce`
+- Preserved existing idempotent ingestion/projection/replay flows for valid signed requests.
+
+### Lob v2 Stage 2 - Deferred domain expansion (implemented)
+
+- Implemented capability-facing self-mailers routes:
+  - `POST /api/direct-mail/self-mailers`
+  - `GET /api/direct-mail/self-mailers`
+  - `GET /api/direct-mail/self-mailers/{piece_id}`
+  - `POST /api/direct-mail/self-mailers/{piece_id}/cancel`
+- Implemented capability-facing checks routes:
+  - `POST /api/direct-mail/checks`
+  - `GET /api/direct-mail/checks`
+  - `GET /api/direct-mail/checks/{piece_id}`
+  - `POST /api/direct-mail/checks/{piece_id}/cancel`
+- Implemented Lob provider client methods for self-mailers/checks create/list/get/cancel.
+- Extended normalized piece contract and persistence mapping to support:
+  - `type=self_mailer`
+  - `type=check`
+- Added projection compatibility for webhook-created piece rows of `self_mailer`/`check`.
+- Added migration to expand direct-mail piece type constraint:
+  - `migrations/017_direct_mail_piece_types_expand.sql`
+
 ## 11) Operator Runbook
 
 - Primary runbook: `docs/LOB_OPERATOR_RUNBOOK.md`
@@ -277,7 +312,7 @@ Stage 4 implementation status:
   - webhook backlog/duplicate diagnostics,
   - replay escalation flow (single -> bulk -> query),
   - expected status states and failure modes,
-  - explicit signature-verification pending-contract note.
+  - signature verification operations (permissive vs enforce) and failure handling.
 
 ## 12) Multi-Tenant Safety Requirements (Implementation Guardrails)
 
@@ -294,5 +329,6 @@ Stage 4 implementation status:
 Rationale:
 
 - Lob v1 direct-mail workflows (verification/postcards/letters), webhook ingest/projection/replay, and operator hardening are implemented.
+- Lob v2 Stage 1 signature verification closure is implemented with mode-gated rollout safety.
+- Lob v2 Stage 2 self-mailers/checks capability expansion is implemented with tenant-safe dispatch.
 - Full regression coverage for Lob paths and key provider/core suites has passed.
-- Remaining blocker is isolated to `lob.webhooks.signature_contract` (`blocked_contract_missing`) without blocking non-dependent runtime operation.

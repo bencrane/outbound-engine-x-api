@@ -35,8 +35,9 @@ class WebhookReplayBulkRequest(BaseModel):
 
 class WebhookReplayBulkItem(BaseModel):
     event_key: str
-    status: Literal["replayed", "not_found"]
+    status: Literal["replayed", "not_found", "replay_failed"]
     event_type: str | None = None
+    error: str | None = None
 
 
 class WebhookReplayBulkResponse(BaseModel):

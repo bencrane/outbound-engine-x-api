@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,6 +31,7 @@ from src.observability import incr_metric, log_event, persist_metrics_snapshot
 
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
+_LOB_SIGNATURE_MODES = {"permissive_audit", "enforce"}
 
 
 def _now_iso() -> str:
@@ -220,6 +222,245 @@ def _compute_lob_event_key(payload: dict[str, Any], raw_body: bytes) -> str:
     return f"lob:{hashlib.sha256(raw_body).hexdigest()}"
 
 
+def _invalid_signature_error(*, reason: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={
+            "type": "webhook_signature_invalid",
+            "provider": "lob",
+            "reason": reason,
+            "message": message,
+        },
+    )
+
+
+def _parse_lob_signature_timestamp(raw_timestamp: str) -> datetime | None:
+    text = str(raw_timestamp).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        try:
+            return datetime.fromtimestamp(int(text), tz=timezone.utc)
+        except (ValueError, OSError):
+            return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _verify_lob_signature(
+    *,
+    raw_body: bytes,
+    request: Request,
+    request_id: str | None,
+) -> dict[str, Any]:
+    raw_mode = str(settings.lob_webhook_signature_mode or "permissive_audit").strip().lower()
+    mode = raw_mode if raw_mode in _LOB_SIGNATURE_MODES else "permissive_audit"
+    tolerance_seconds = max(0, int(settings.lob_webhook_signature_tolerance_seconds or 0))
+    secret = settings.lob_webhook_secret
+    signature = request.headers.get("Lob-Signature")
+    timestamp_header = request.headers.get("Lob-Signature-Timestamp")
+
+    result = {
+        "signature_mode": mode,
+        "signature_verified": False,
+        "signature_reason": "not_verified",
+        "signature_timestamp": timestamp_header,
+    }
+
+    def _audit_failure(reason: str, message: str, level: int = logging.WARNING) -> dict[str, Any]:
+        incr_metric("webhook.signature.audit_failed", provider_slug="lob", reason=reason, mode=mode)
+        log_event(
+            "webhook_signature_audit_failed",
+            level=level,
+            request_id=request_id,
+            provider_slug="lob",
+            reason=reason,
+            mode=mode,
+            message=message,
+        )
+        result["signature_reason"] = reason
+        return result
+
+    if mode == "enforce" and not secret:
+        incr_metric("webhook.signature.enforce_config_error", provider_slug="lob")
+        incr_metric("webhook.events.rejected", provider_slug="lob", reason="signature_configuration_error")
+        log_event(
+            "webhook_signature_enforce_config_error",
+            level=logging.ERROR,
+            request_id=request_id,
+            provider_slug="lob",
+            mode=mode,
+            message="LOB_WEBHOOK_SECRET is required when mode=enforce",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "type": "webhook_signature_configuration_error",
+                "provider": "lob",
+                "message": "Webhook signature enforcement is enabled but secret is not configured",
+            },
+        )
+
+    if not secret:
+        return _audit_failure("secret_not_configured", "Signature secret not configured")
+
+    if not signature:
+        if mode == "enforce":
+            incr_metric("webhook.signature.rejected", provider_slug="lob", reason="missing_signature")
+            incr_metric("webhook.events.rejected", provider_slug="lob", reason="missing_signature")
+            raise _invalid_signature_error(
+                reason="missing_signature",
+                message="Missing Lob-Signature header",
+            )
+        return _audit_failure("missing_signature", "Missing Lob-Signature header")
+
+    if not timestamp_header:
+        if mode == "enforce":
+            incr_metric("webhook.signature.rejected", provider_slug="lob", reason="missing_timestamp")
+            incr_metric("webhook.events.rejected", provider_slug="lob", reason="missing_timestamp")
+            raise _invalid_signature_error(
+                reason="missing_timestamp",
+                message="Missing Lob-Signature-Timestamp header",
+            )
+        return _audit_failure("missing_timestamp", "Missing Lob-Signature-Timestamp header")
+
+    parsed_timestamp = _parse_lob_signature_timestamp(timestamp_header)
+    if parsed_timestamp is None:
+        if mode == "enforce":
+            incr_metric("webhook.signature.rejected", provider_slug="lob", reason="invalid_timestamp")
+            incr_metric("webhook.events.rejected", provider_slug="lob", reason="invalid_timestamp")
+            raise _invalid_signature_error(
+                reason="invalid_timestamp",
+                message="Invalid Lob-Signature-Timestamp header format",
+            )
+        return _audit_failure("invalid_timestamp", "Invalid Lob-Signature-Timestamp header format")
+
+    age_seconds = abs((datetime.now(timezone.utc) - parsed_timestamp).total_seconds())
+    if tolerance_seconds > 0 and age_seconds > tolerance_seconds:
+        if mode == "enforce":
+            incr_metric("webhook.signature.rejected", provider_slug="lob", reason="stale_timestamp")
+            incr_metric("webhook.events.rejected", provider_slug="lob", reason="stale_timestamp")
+            raise _invalid_signature_error(
+                reason="stale_timestamp",
+                message="Lob-Signature-Timestamp is outside accepted tolerance window",
+            )
+        return _audit_failure("stale_timestamp", "Lob-Signature-Timestamp outside accepted tolerance window")
+
+    signature_input = f"{timestamp_header}.{raw_body.decode('utf-8', errors='strict')}"
+    expected = hmac.new(secret.encode("utf-8"), signature_input.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        if mode == "enforce":
+            incr_metric("webhook.signature.rejected", provider_slug="lob", reason="invalid_signature")
+            incr_metric("webhook.events.rejected", provider_slug="lob", reason="invalid_signature")
+            raise _invalid_signature_error(
+                reason="invalid_signature",
+                message="Lob webhook signature verification failed",
+            )
+        return _audit_failure("invalid_signature", "Lob webhook signature verification failed")
+
+    incr_metric("webhook.signature.verified", provider_slug="lob", mode=mode)
+    result["signature_verified"] = True
+    result["signature_reason"] = "verified"
+    return result
+
+
+def _lob_replay_controls() -> dict[str, float | int]:
+    batch_size = max(1, min(int(settings.lob_webhook_replay_batch_size or 25), 200))
+    max_events = max(1, min(int(settings.lob_webhook_replay_max_events_per_run or 500), 5000))
+    sleep_ms = max(0, min(int(settings.lob_webhook_replay_sleep_ms or 0), 10000))
+    max_sleep_ms = max(sleep_ms, min(int(settings.lob_webhook_replay_max_sleep_ms or 1000), 30000))
+    backoff_multiplier = float(settings.lob_webhook_replay_backoff_multiplier or 2.0)
+    if backoff_multiplier < 1.0:
+        backoff_multiplier = 1.0
+    return {
+        "batch_size": batch_size,
+        "max_events": max_events,
+        "sleep_ms": sleep_ms,
+        "max_sleep_ms": max_sleep_ms,
+        "backoff_multiplier": backoff_multiplier,
+    }
+
+
+def _is_projection_retryable(error: Exception) -> bool:
+    text = str(error).lower()
+    if "timeout" in text or "temporar" in text or "connection" in text:
+        return True
+    if "constraint" in text or "invalid" in text or "not found" in text or "missing" in text:
+        return False
+    return False
+
+
+def _record_dead_letter(
+    *,
+    provider_slug: str,
+    event_key: str,
+    event_type: str,
+    payload: dict[str, Any],
+    org_id: str | None,
+    company_id: str | None,
+    reason: str,
+    error: str,
+    retryable: bool,
+    request_id: str | None,
+) -> None:
+    now_iso = _now_iso()
+    enriched_payload = dict(payload)
+    enriched_payload["_dead_letter"] = {
+        "reason": reason,
+        "retryable": retryable,
+        "error": error,
+        "recorded_at": now_iso,
+    }
+    try:
+        updated = supabase.table("webhook_events").update(
+            {
+                "status": "dead_letter",
+                "last_error": error,
+                "payload": enriched_payload,
+                "processed_at": now_iso,
+            }
+        ).eq("provider_slug", provider_slug).eq("event_key", event_key).execute()
+        if not updated.data:
+            supabase.table("webhook_events").insert(
+                {
+                    "provider_slug": provider_slug,
+                    "event_key": event_key,
+                    "event_type": event_type,
+                    "status": "dead_letter",
+                    "replay_count": 0,
+                    "last_replay_at": None,
+                    "last_error": error,
+                    "org_id": org_id,
+                    "company_id": company_id,
+                    "payload": enriched_payload,
+                    "processed_at": now_iso,
+                }
+            ).execute()
+    except Exception as dead_letter_exc:
+        log_event(
+            "webhook_dead_letter_persist_failed",
+            level=logging.ERROR,
+            request_id=request_id,
+            provider_slug=provider_slug,
+            event_key=event_key,
+            error=str(dead_letter_exc),
+        )
+        return
+    incr_metric("webhook.dead_letter.recorded", provider_slug=provider_slug, reason=reason, retryable=retryable)
+    log_event(
+        "webhook_dead_letter_recorded",
+        level=logging.WARNING,
+        request_id=request_id,
+        provider_slug=provider_slug,
+        event_key=event_key,
+        event_type=event_type,
+        reason=reason,
+        retryable=retryable,
+    )
+
+
 def _persist_event_or_raise_duplicate(
     provider_slug: str,
     event_key: str,
@@ -306,7 +547,15 @@ def _upsert_direct_mail_piece_from_lob_event(
     piece_body = payload.get("body") if isinstance(payload.get("body"), dict) else {}
     resource = piece_body.get("resource") if isinstance(piece_body.get("resource"), dict) else {}
     resource_type = str(resource.get("object") or resource.get("type") or payload.get("resource_type") or "").lower()
-    piece_type = "postcard" if "postcard" in resource_type else ("letter" if "letter" in resource_type else None)
+    piece_type = None
+    if "postcard" in resource_type:
+        piece_type = "postcard"
+    elif "letter" in resource_type:
+        piece_type = "letter"
+    elif "self_mailer" in resource_type or "self mailer" in resource_type:
+        piece_type = "self_mailer"
+    elif "check" in resource_type:
+        piece_type = "check"
     status_value = _normalize_lob_piece_status(normalized_event_type)
     send_date = resource.get("send_date")
     metadata = resource.get("metadata") if isinstance(resource.get("metadata"), dict) else None
@@ -423,29 +672,58 @@ def _replay_webhook_event(
 ) -> WebhookReplayResponse:
     payload = event_row.get("payload") or {}
     event_type = event_row.get("event_type") or _extract_event_type(payload)
-    if provider_slug == "lob":
-        piece_external_id = (
-            payload.get("resource_id")
-            or payload.get("piece_id")
-            or payload.get("object_id")
-            or (
-                payload.get("body", {}).get("resource", {}).get("id")
-                if isinstance(payload.get("body"), dict) and isinstance(payload.get("body", {}).get("resource"), dict)
-                else None
+    try:
+        if provider_slug == "lob":
+            piece_external_id = (
+                payload.get("resource_id")
+                or payload.get("piece_id")
+                or payload.get("object_id")
+                or (
+                    payload.get("body", {}).get("resource", {}).get("id")
+                    if isinstance(payload.get("body"), dict) and isinstance(payload.get("body", {}).get("resource"), dict)
+                    else None
+                )
             )
+            if piece_external_id:
+                piece = _resolve_direct_mail_piece(provider_slug="lob", piece_external_id=str(piece_external_id))
+                projection_row = _upsert_direct_mail_piece_from_lob_event(
+                    piece_external_id=str(piece_external_id),
+                    normalized_event_type=event_type,
+                    payload=payload,
+                    piece=piece,
+                )
+                if not projection_row:
+                    raise ValueError("projection_unresolved")
+            incr_metric("webhook.projection.success", provider_slug="lob", event_type=event_type)
+        else:
+            campaign_external_id = _extract_campaign_id(payload)
+            campaign = _resolve_campaign(campaign_external_id, provider_slug) if campaign_external_id else None
+            _apply_event_to_local_state(campaign=campaign, event_type=event_type, payload=payload)
+    except Exception as exc:
+        now_iso = _now_iso()
+        supabase.table("webhook_events").update(
+            {
+                "processed_at": now_iso,
+                "status": "dead_letter",
+                "last_error": str(exc),
+            }
+        ).eq("id", event_row["id"]).execute()
+        incr_metric("webhook.replays.failed", provider_slug=provider_slug)
+        if provider_slug == "lob":
+            incr_metric("webhook.projection.failure", provider_slug="lob", event_type=event_type)
+        log_event(
+            "webhook_replay_failed",
+            level=logging.WARNING,
+            request_id=request_id,
+            provider_slug=provider_slug,
+            event_key=event_row.get("event_key"),
+            event_type=event_type,
+            error=str(exc),
         )
-        if piece_external_id:
-            piece = _resolve_direct_mail_piece(provider_slug="lob", piece_external_id=str(piece_external_id))
-            _upsert_direct_mail_piece_from_lob_event(
-                piece_external_id=str(piece_external_id),
-                normalized_event_type=event_type,
-                payload=payload,
-                piece=piece,
-            )
-    else:
-        campaign_external_id = _extract_campaign_id(payload)
-        campaign = _resolve_campaign(campaign_external_id, provider_slug) if campaign_external_id else None
-        _apply_event_to_local_state(campaign=campaign, event_type=event_type, payload=payload)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Webhook replay failed",
+        ) from exc
     next_replay_count = int(event_row.get("replay_count") or 0) + 1
     now_iso = _now_iso()
     supabase.table("webhook_events").update(
@@ -458,6 +736,7 @@ def _replay_webhook_event(
         }
     ).eq("id", event_row["id"]).execute()
     incr_metric("webhook.replays.processed", provider_slug=provider_slug)
+    incr_metric("webhook.replay_processed", provider_slug=provider_slug)
     log_event(
         "webhook_replay_processed",
         request_id=request_id,
@@ -680,8 +959,10 @@ async def ingest_heyreach_webhook(request: Request):
 async def ingest_lob_webhook(request: Request):
     req_id = _request_id(request)
     raw_body = await request.body()
-    signature_mode = "disabled_pending_contract"
+    signature_result = _verify_lob_signature(raw_body=raw_body, request=request, request_id=req_id)
+    signature_mode = signature_result["signature_mode"]
     incr_metric("webhook.events.received", provider_slug="lob")
+    incr_metric("webhook.events.accepted", provider_slug="lob", signature_mode=signature_mode)
 
     try:
         payload = json.loads(raw_body.decode("utf-8"))
@@ -710,6 +991,9 @@ async def ingest_lob_webhook(request: Request):
     enriched_payload["_ingestion"] = {
         "provider_slug": "lob",
         "signature_mode": signature_mode,
+        "signature_verified": signature_result.get("signature_verified", False),
+        "signature_reason": signature_result.get("signature_reason"),
+        "signature_timestamp": signature_result.get("signature_timestamp"),
         "request_headers": {k: v for k, v in request.headers.items()},
         "request_id": req_id,
     }
@@ -723,21 +1007,31 @@ async def ingest_lob_webhook(request: Request):
         event_type=normalized_event_type,
         event_key=event_key,
         signature_mode=signature_mode,
+        signature_verified=signature_result.get("signature_verified", False),
+        signature_reason=signature_result.get("signature_reason"),
         has_piece_id=bool(piece_external_id),
     )
 
     try:
+        if payload.get("malformed_json"):
+            raise ValueError("malformed_json_payload")
         _persist_event_or_raise_duplicate("lob", event_key, normalized_event_type, enriched_payload, org_id, company_id)
         if piece_external_id:
-            _upsert_direct_mail_piece_from_lob_event(
+            projection_row = _upsert_direct_mail_piece_from_lob_event(
                 piece_external_id=str(piece_external_id),
                 normalized_event_type=normalized_event_type,
                 payload=enriched_payload,
                 piece=piece,
             )
+            if not projection_row:
+                raise ValueError("projection_unresolved")
+            incr_metric("webhook.projection.success", provider_slug="lob", event_type=normalized_event_type)
+        else:
+            incr_metric("webhook.projection.success", provider_slug="lob", event_type=normalized_event_type)
     except HTTPException as exc:
         if exc.status_code == status.HTTP_200_OK:
             incr_metric("webhook.events.duplicate", provider_slug="lob")
+            incr_metric("webhook.duplicate_ignored", provider_slug="lob")
             log_event(
                 "webhook_duplicate_ignored",
                 request_id=req_id,
@@ -750,6 +1044,8 @@ async def ingest_lob_webhook(request: Request):
                 "event_type": normalized_event_type,
                 "event_key": event_key,
                 "signature_mode": signature_mode,
+                "signature_verified": signature_result.get("signature_verified", False),
+                "signature_reason": signature_result.get("signature_reason"),
             }
         incr_metric("webhook.events.failed", provider_slug="lob")
         log_event(
@@ -765,6 +1061,7 @@ async def ingest_lob_webhook(request: Request):
         raise
     except Exception as exc:
         incr_metric("webhook.events.failed", provider_slug="lob")
+        incr_metric("webhook.projection.failure", provider_slug="lob", event_type=normalized_event_type)
         log_event(
             "webhook_failed",
             level=logging.ERROR,
@@ -774,30 +1071,32 @@ async def ingest_lob_webhook(request: Request):
             event_key=event_key,
             error=str(exc),
         )
-        # Persist failed envelope as dead_letter when possible.
-        try:
-            supabase.table("webhook_events").insert(
-                {
-                    "provider_slug": "lob",
-                    "event_key": f"{event_key}:failure",
-                    "event_type": normalized_event_type,
-                    "status": "failed",
-                    "replay_count": 0,
-                    "last_replay_at": None,
-                    "last_error": str(exc),
-                    "org_id": org_id,
-                    "company_id": company_id,
-                    "payload": enriched_payload,
-                    "processed_at": _now_iso(),
-                }
-            ).execute()
-        except Exception:
-            pass
+        retryable = _is_projection_retryable(exc)
+        reason = "projection_failure"
+        if "malformed_json_payload" in str(exc):
+            reason = "malformed_payload"
+        elif "projection_unresolved" in str(exc):
+            reason = "projection_unresolved"
+        _record_dead_letter(
+            provider_slug="lob",
+            event_key=event_key,
+            event_type=normalized_event_type,
+            payload=enriched_payload,
+            org_id=org_id,
+            company_id=company_id,
+            reason=reason,
+            error=str(exc),
+            retryable=retryable,
+            request_id=req_id,
+        )
         return {
-            "status": "failed_recorded",
+            "status": "dead_letter_recorded",
             "event_type": normalized_event_type,
             "event_key": event_key,
             "signature_mode": signature_mode,
+            "signature_verified": signature_result.get("signature_verified", False),
+            "signature_reason": signature_result.get("signature_reason"),
+            "dead_letter": {"reason": reason, "retryable": retryable},
         }
 
     incr_metric("webhook.events.processed", provider_slug="lob")
@@ -808,6 +1107,8 @@ async def ingest_lob_webhook(request: Request):
         event_type=normalized_event_type,
         event_key=event_key,
         signature_mode=signature_mode,
+        signature_verified=signature_result.get("signature_verified", False),
+        signature_reason=signature_result.get("signature_reason"),
         piece_found=bool(piece),
     )
     return {
@@ -815,6 +1116,8 @@ async def ingest_lob_webhook(request: Request):
         "event_type": normalized_event_type,
         "event_key": event_key,
         "signature_mode": signature_mode,
+        "signature_verified": signature_result.get("signature_verified", False),
+        "signature_reason": signature_result.get("signature_reason"),
     }
 
 
@@ -887,25 +1190,89 @@ async def replay_webhook_events_bulk(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="event_keys cannot be empty")
 
     req_id = _request_id(request)
+    controls = _lob_replay_controls() if data.provider_slug == "lob" else None
+    if controls and len(data.event_keys) > int(controls["max_events"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Requested replay count exceeds max events per run ({int(controls['max_events'])})",
+        )
     replayed = 0
     not_found = 0
+    replay_failed = 0
     results: list[WebhookReplayBulkItem] = []
-
-    for event_key in data.event_keys:
-        event_row = _get_webhook_event(data.provider_slug, event_key)
-        if not event_row:
-            not_found += 1
-            results.append(WebhookReplayBulkItem(event_key=event_key, status="not_found", event_type=None))
-            continue
-        replay_result = _replay_webhook_event(data.provider_slug, event_row, request_id=req_id)
-        replayed += 1
-        results.append(
-            WebhookReplayBulkItem(
-                event_key=event_key,
-                status="replayed",
-                event_type=replay_result.event_type,
+    if controls:
+        batch_size = int(controls["batch_size"])
+        sleep_seconds = float(int(controls["sleep_ms"]) / 1000.0)
+        max_sleep_seconds = float(int(controls["max_sleep_ms"]) / 1000.0)
+        backoff = float(controls["backoff_multiplier"])
+        current_sleep = sleep_seconds
+        for start in range(0, len(data.event_keys), batch_size):
+            batch = data.event_keys[start:start + batch_size]
+            batch_failed = 0
+            for event_key in batch:
+                event_row = _get_webhook_event(data.provider_slug, event_key)
+                if not event_row:
+                    not_found += 1
+                    results.append(WebhookReplayBulkItem(event_key=event_key, status="not_found", event_type=None))
+                    continue
+                try:
+                    replay_result = _replay_webhook_event(data.provider_slug, event_row, request_id=req_id)
+                except HTTPException as exc:
+                    replay_failed += 1
+                    batch_failed += 1
+                    incr_metric("webhook.replay_failed", provider_slug=data.provider_slug)
+                    results.append(
+                        WebhookReplayBulkItem(
+                            event_key=event_key,
+                            status="replay_failed",
+                            event_type=event_row.get("event_type"),
+                            error=str(exc.detail),
+                        )
+                    )
+                    continue
+                replayed += 1
+                results.append(
+                    WebhookReplayBulkItem(
+                        event_key=event_key,
+                        status="replayed",
+                        event_type=replay_result.event_type,
+                    )
+                )
+            if start + batch_size < len(data.event_keys) and current_sleep > 0:
+                time.sleep(current_sleep)
+                if batch_failed > 0:
+                    current_sleep = min(max_sleep_seconds, current_sleep * backoff)
+                else:
+                    current_sleep = max(sleep_seconds, current_sleep / max(1.0, backoff))
+    else:
+        for event_key in data.event_keys:
+            event_row = _get_webhook_event(data.provider_slug, event_key)
+            if not event_row:
+                not_found += 1
+                results.append(WebhookReplayBulkItem(event_key=event_key, status="not_found", event_type=None))
+                continue
+            try:
+                replay_result = _replay_webhook_event(data.provider_slug, event_row, request_id=req_id)
+            except HTTPException as exc:
+                replay_failed += 1
+                incr_metric("webhook.replay_failed", provider_slug=data.provider_slug)
+                results.append(
+                    WebhookReplayBulkItem(
+                        event_key=event_key,
+                        status="replay_failed",
+                        event_type=event_row.get("event_type"),
+                        error=str(exc.detail),
+                    )
+                )
+                continue
+            replayed += 1
+            results.append(
+                WebhookReplayBulkItem(
+                    event_key=event_key,
+                    status="replayed",
+                    event_type=replay_result.event_type,
+                )
             )
-        )
 
     incr_metric("webhook.replays.bulk", provider_slug=data.provider_slug)
     log_event(
@@ -915,6 +1282,7 @@ async def replay_webhook_events_bulk(
         requested=len(data.event_keys),
         replayed=replayed,
         not_found=not_found,
+        replay_failed=replay_failed,
     )
     persist_metrics_snapshot(
         supabase_client=supabase,
@@ -941,6 +1309,7 @@ async def replay_webhook_events_by_query(
     _ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
     req_id = _request_id(request)
+    controls = _lob_replay_controls() if data.provider_slug == "lob" else None
     query = supabase.table("webhook_events").select(
         "id, provider_slug, event_key, event_type, status, org_id, company_id, payload, replay_count, created_at"
     ).eq("provider_slug", data.provider_slug)
@@ -970,19 +1339,78 @@ async def replay_webhook_events_by_query(
         filtered.append(row)
     filtered = sorted(filtered, key=lambda row: row.get("created_at") or "", reverse=True)
     selected = filtered[: data.limit]
+    if controls and len(selected) > int(controls["max_events"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Matched replay count exceeds max events per run ({int(controls['max_events'])})",
+        )
 
     replayed = 0
+    replay_failed = 0
     results: list[WebhookReplayBulkItem] = []
-    for row in selected:
-        replay_result = _replay_webhook_event(data.provider_slug, row, request_id=req_id)
-        replayed += 1
-        results.append(
-            WebhookReplayBulkItem(
-                event_key=row["event_key"],
-                status="replayed",
-                event_type=replay_result.event_type,
+    if controls:
+        batch_size = int(controls["batch_size"])
+        sleep_seconds = float(int(controls["sleep_ms"]) / 1000.0)
+        max_sleep_seconds = float(int(controls["max_sleep_ms"]) / 1000.0)
+        backoff = float(controls["backoff_multiplier"])
+        current_sleep = sleep_seconds
+        for start in range(0, len(selected), batch_size):
+            batch = selected[start:start + batch_size]
+            batch_failed = 0
+            for row in batch:
+                try:
+                    replay_result = _replay_webhook_event(data.provider_slug, row, request_id=req_id)
+                except HTTPException as exc:
+                    replay_failed += 1
+                    batch_failed += 1
+                    incr_metric("webhook.replay_failed", provider_slug=data.provider_slug)
+                    results.append(
+                        WebhookReplayBulkItem(
+                            event_key=row["event_key"],
+                            status="replay_failed",
+                            event_type=row.get("event_type"),
+                            error=str(exc.detail),
+                        )
+                    )
+                    continue
+                replayed += 1
+                results.append(
+                    WebhookReplayBulkItem(
+                        event_key=row["event_key"],
+                        status="replayed",
+                        event_type=replay_result.event_type,
+                    )
+                )
+            if start + batch_size < len(selected) and current_sleep > 0:
+                time.sleep(current_sleep)
+                if batch_failed > 0:
+                    current_sleep = min(max_sleep_seconds, current_sleep * backoff)
+                else:
+                    current_sleep = max(sleep_seconds, current_sleep / max(1.0, backoff))
+    else:
+        for row in selected:
+            try:
+                replay_result = _replay_webhook_event(data.provider_slug, row, request_id=req_id)
+            except HTTPException as exc:
+                replay_failed += 1
+                incr_metric("webhook.replay_failed", provider_slug=data.provider_slug)
+                results.append(
+                    WebhookReplayBulkItem(
+                        event_key=row["event_key"],
+                        status="replay_failed",
+                        event_type=row.get("event_type"),
+                        error=str(exc.detail),
+                    )
+                )
+                continue
+            replayed += 1
+            results.append(
+                WebhookReplayBulkItem(
+                    event_key=row["event_key"],
+                    status="replayed",
+                    event_type=replay_result.event_type,
+                )
             )
-        )
 
     incr_metric("webhook.replays.query", provider_slug=data.provider_slug)
     log_event(
@@ -991,6 +1419,7 @@ async def replay_webhook_events_by_query(
         provider_slug=data.provider_slug,
         matched=len(selected),
         replayed=replayed,
+        replay_failed=replay_failed,
         limit=data.limit,
     )
     persist_metrics_snapshot(

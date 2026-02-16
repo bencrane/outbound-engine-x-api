@@ -11,13 +11,14 @@ In-scope Lob v1 workflows:
 - Address verification (`/api/direct-mail/verify-address/us`, `/api/direct-mail/verify-address/us/bulk`)
 - Postcards create/list/get/cancel
 - Letters create/list/get/cancel
+- Self-mailers create/list/get/cancel
+- Checks create/list/get/cancel
 - Webhook ingest (`POST /api/webhooks/lob`) with idempotent projection into `company_direct_mail_pieces`
 - Super-admin replay (`replay`, `replay-bulk`, `replay-query`)
 
 Out of scope for this runbook:
 
-- Cryptographic webhook signature validation implementation (pending provider contract)
-- Deferred resources (self-mailers, checks)
+- Signature/compliance controls beyond current enforced contract (future schema-version strictness / DLQ policies).
 
 ## Incident Triage
 
@@ -78,6 +79,21 @@ Operational guidance:
 - Validate normalized piece status updates before scaling replay batch size.
 - Track replay metrics and post-replay failure residuals.
 
+### Replay throttling and guardrails (Lob)
+
+Lob replay paths enforce operator safety controls:
+
+- `LOB_WEBHOOK_REPLAY_MAX_EVENTS_PER_RUN` (hard cap per replay request)
+- `LOB_WEBHOOK_REPLAY_BATCH_SIZE` (events per batch)
+- `LOB_WEBHOOK_REPLAY_SLEEP_MS` (base inter-batch sleep)
+- `LOB_WEBHOOK_REPLAY_BACKOFF_MULTIPLIER` and `LOB_WEBHOOK_REPLAY_MAX_SLEEP_MS` (adaptive slowdown when failures occur)
+
+Operator guidance:
+
+- Keep max-events low during incident response to reduce blast radius.
+- Increase sleep and reduce batch size if `replay_failed` rises.
+- Prefer query replay with narrow filters (provider + org + event type + time window).
+
 ## Expected States and Failure Modes
 
 Direct mail piece status normalization:
@@ -93,13 +109,62 @@ Common failure modes:
 - Malformed webhook payloads (captured, non-crashing path)
 - Missing local piece mapping during projection (event retained for audit/replay)
 
-## Signature Verification Contract Status
+## Dead-letter Triage and Recovery
 
-`lob.webhooks.signature_contract` is still `blocked_contract_missing`.
+Dead-letter events are stored in `webhook_events` with `status=dead_letter`, preserved payload, failure reason, and retryability metadata.
 
-Current runtime behavior for Lob webhook ingest is explicitly:
+Common dead-letter reasons:
 
-- verification mode: `disabled_pending_contract`
-- no cryptographic signature validation is performed yet
+- `malformed_payload`
+- `projection_unresolved`
+- `projection_failure`
 
-Do not implement signature crypto until canonical provider contract is confirmed.
+Recovery flow:
+
+1. Query dead-letter rows scoped by provider/org/company and newest first.
+2. Inspect payload + `_dead_letter.reason` + `last_error`.
+3. Fix root cause (mapping/config/code).
+4. Reprocess using existing replay endpoint(s) with bounded batches.
+5. Confirm status transitions to `replayed` and piece state is updated.
+
+If replay still fails, keep the event in dead-letter and escalate with logs/metrics attached.
+
+## Signature Verification Operations
+
+Lob webhook signature verification is implemented using:
+
+- `Lob-Signature`
+- `Lob-Signature-Timestamp`
+- HMAC-SHA256 over `<timestamp>.<raw_request_body>`
+
+Runtime modes:
+
+- `permissive_audit`: verify and annotate/log result, do not reject request for signature failures
+- `enforce`: reject invalid/missing/stale signatures with deterministic auth error shape
+
+Timestamp/replay window:
+
+- Enforced against `LOB_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS` (default 300s)
+
+Incident handling:
+
+- If signature failures spike in `permissive_audit`, investigate before promoting to `enforce`.
+- If `enforce` is enabled without `LOB_WEBHOOK_SECRET`, service returns configuration error and must be remediated immediately.
+
+### Signature rollout playbook (`permissive_audit` -> `enforce`)
+
+1. Start in `permissive_audit`.
+2. Monitor signature failure reasons (`missing_signature`, `missing_timestamp`, `invalid_timestamp`, `stale_timestamp`, `invalid_signature`) until stable/near-zero.
+3. Fix upstream sender/header issues.
+4. Enable `enforce` in controlled environment first.
+5. Promote to production `enforce` only after sustained clean window.
+
+Rollback: switch mode back to `permissive_audit` if rejection spikes threaten delivery.
+
+## Recommended Alert Thresholds (starting points)
+
+- **webhook rejected rate**: `webhook.events.rejected / webhook.events.received > 1%` for 5m
+- **signature failure spike**: any single signature-failure reason > 20 events/5m
+- **duplicate spike**: `webhook.duplicate_ignored / webhook.events.received > 10%` for 15m
+- **projection failure**: `webhook.projection.failure > 0` sustained for 5m
+- **replay health**: `webhook.replay_failed > 0` or replay backlog increasing for 15m

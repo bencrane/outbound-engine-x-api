@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-DirectMailPieceType = Literal["postcard", "letter"]
+DirectMailPieceType = Literal["postcard", "letter", "self_mailer", "check"]
 DirectMailPieceStatus = Literal[
     "queued",
     "processing",

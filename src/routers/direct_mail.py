@@ -21,14 +21,22 @@ from src.models.direct_mail import (
 )
 from src.providers.lob.client import (
     LobProviderError,
+    cancel_check as lob_cancel_check,
     cancel_letter as lob_cancel_letter,
     cancel_postcard as lob_cancel_postcard,
+    cancel_self_mailer as lob_cancel_self_mailer,
+    create_check as lob_create_check,
     create_letter as lob_create_letter,
     create_postcard as lob_create_postcard,
+    create_self_mailer as lob_create_self_mailer,
+    get_check as lob_get_check,
     get_letter as lob_get_letter,
     get_postcard as lob_get_postcard,
+    get_self_mailer as lob_get_self_mailer,
+    list_checks as lob_list_checks,
     list_letters as lob_list_letters,
     list_postcards as lob_list_postcards,
+    list_self_mailers as lob_list_self_mailers,
     verify_address_us_bulk as lob_verify_address_us_bulk,
     verify_address_us_single as lob_verify_address_us_single,
 )
@@ -785,6 +793,392 @@ async def cancel_letter(
     return DirectMailPieceCancelResponse(
         id=updated["external_piece_id"],
         type="letter",
+        status=updated.get("status") or "unknown",
+        updated_at=_parse_datetime(updated.get("updated_at")) or datetime.now(timezone.utc),
+    )
+
+
+@router.post("/self-mailers", response_model=DirectMailPieceResponse, status_code=status.HTTP_201_CREATED)
+async def create_self_mailer(
+    data: DirectMailPieceCreateRequest,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="create_self_mailer", provider="lob")
+    resolved_company_id = _resolve_company_id(auth, data.company_id)
+    _get_company(auth, resolved_company_id)
+    entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
+    provider = _get_provider_by_id(entitlement["provider_id"])
+    _ensure_lob_provider(provider["slug"], operation="create_self_mailer", request_id=request_id)
+    creds = _get_org_provider_config(auth.org_id, "lob")
+
+    try:
+        provider_piece = lob_create_self_mailer(
+            api_key=creds["api_key"],
+            base_url=creds.get("instance_url"),
+            payload=data.payload,
+            idempotency_key=data.idempotency_key,
+            idempotency_in_query=(data.idempotency_location == "query"),
+        )
+    except LobProviderError as exc:
+        _raise_provider_http_error("create_self_mailer", exc, request_id=request_id)
+
+    if not provider_piece.get("id"):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Self mailer create failed: provider did not return piece id",
+        )
+
+    _upsert_piece(
+        org_id=auth.org_id,
+        company_id=resolved_company_id,
+        provider_id=provider["id"],
+        piece_type="self_mailer",
+        provider_piece=provider_piece,
+    )
+    row = _get_piece_for_auth(auth, piece_id=str(provider_piece["id"]), piece_type="self_mailer")
+    incr_metric("direct_mail.requests.processed", operation="create_self_mailer", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="create_self_mailer",
+        provider="lob",
+        company_id=resolved_company_id,
+        piece_id=str(provider_piece["id"]),
+        status=row.get("status"),
+    )
+    return _piece_row_to_response(row)
+
+
+@router.get("/self-mailers", response_model=DirectMailPieceListResponse)
+async def list_self_mailers(
+    request: Request,
+    company_id: str | None = Query(None),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="list_self_mailers", provider="lob")
+    resolved_company_id = _resolve_company_id(auth, company_id)
+    _get_company(auth, resolved_company_id)
+    entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
+    provider = _get_provider_by_id(entitlement["provider_id"])
+    _ensure_lob_provider(provider["slug"], operation="list_self_mailers", request_id=request_id)
+    creds = _get_org_provider_config(auth.org_id, "lob")
+
+    try:
+        provider_payload = lob_list_self_mailers(
+            api_key=creds["api_key"],
+            base_url=creds.get("instance_url"),
+            params={"limit": 100},
+        )
+    except LobProviderError as exc:
+        _raise_provider_http_error("list_self_mailers", exc, request_id=request_id)
+
+    for piece in _extract_piece_list_payload(provider_payload):
+        _upsert_piece(
+            org_id=auth.org_id,
+            company_id=resolved_company_id,
+            provider_id=provider["id"],
+            piece_type="self_mailer",
+            provider_piece=piece,
+        )
+
+    rows = supabase.table("company_direct_mail_pieces").select("*").eq(
+        "org_id", auth.org_id
+    ).eq("company_id", resolved_company_id).eq("piece_type", "self_mailer").is_("deleted_at", "null").execute().data or []
+    pieces = [_piece_row_to_response(row) for row in rows]
+    incr_metric("direct_mail.requests.processed", operation="list_self_mailers", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="list_self_mailers",
+        provider="lob",
+        company_id=resolved_company_id,
+        result_count=len(pieces),
+    )
+    return DirectMailPieceListResponse(pieces=pieces)
+
+
+@router.get("/self-mailers/{piece_id}", response_model=DirectMailPieceResponse)
+async def get_self_mailer(
+    piece_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="get_self_mailer", provider="lob")
+    row = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="self_mailer")
+    provider = _get_provider_by_id(row["provider_id"])
+    _ensure_lob_provider(provider["slug"], operation="get_self_mailer", request_id=request_id)
+    creds = _get_org_provider_config(auth.org_id, "lob")
+
+    try:
+        provider_piece = lob_get_self_mailer(
+            api_key=creds["api_key"],
+            base_url=creds.get("instance_url"),
+            self_mailer_id=piece_id,
+        )
+    except LobProviderError as exc:
+        _raise_provider_http_error("get_self_mailer", exc, request_id=request_id)
+
+    _upsert_piece(
+        org_id=auth.org_id,
+        company_id=row["company_id"],
+        provider_id=row["provider_id"],
+        piece_type="self_mailer",
+        provider_piece=provider_piece,
+    )
+    response = _piece_row_to_response(_get_piece_for_auth(auth, piece_id=piece_id, piece_type="self_mailer"))
+    incr_metric("direct_mail.requests.processed", operation="get_self_mailer", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="get_self_mailer",
+        provider="lob",
+        company_id=row["company_id"],
+        piece_id=piece_id,
+        status=response.status,
+    )
+    return response
+
+
+@router.post("/self-mailers/{piece_id}/cancel", response_model=DirectMailPieceCancelResponse)
+async def cancel_self_mailer(
+    piece_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="cancel_self_mailer", provider="lob")
+    row = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="self_mailer")
+    provider = _get_provider_by_id(row["provider_id"])
+    _ensure_lob_provider(provider["slug"], operation="cancel_self_mailer", request_id=request_id)
+    creds = _get_org_provider_config(auth.org_id, "lob")
+
+    try:
+        provider_piece = lob_cancel_self_mailer(
+            api_key=creds["api_key"],
+            base_url=creds.get("instance_url"),
+            self_mailer_id=piece_id,
+        )
+    except LobProviderError as exc:
+        _raise_provider_http_error("cancel_self_mailer", exc, request_id=request_id)
+
+    _upsert_piece(
+        org_id=auth.org_id,
+        company_id=row["company_id"],
+        provider_id=row["provider_id"],
+        piece_type="self_mailer",
+        provider_piece=provider_piece,
+    )
+    updated = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="self_mailer")
+    incr_metric("direct_mail.requests.processed", operation="cancel_self_mailer", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="cancel_self_mailer",
+        provider="lob",
+        company_id=row["company_id"],
+        piece_id=piece_id,
+        status=updated.get("status"),
+    )
+    return DirectMailPieceCancelResponse(
+        id=updated["external_piece_id"],
+        type="self_mailer",
+        status=updated.get("status") or "unknown",
+        updated_at=_parse_datetime(updated.get("updated_at")) or datetime.now(timezone.utc),
+    )
+
+
+@router.post("/checks", response_model=DirectMailPieceResponse, status_code=status.HTTP_201_CREATED)
+async def create_check(
+    data: DirectMailPieceCreateRequest,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="create_check", provider="lob")
+    resolved_company_id = _resolve_company_id(auth, data.company_id)
+    _get_company(auth, resolved_company_id)
+    entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
+    provider = _get_provider_by_id(entitlement["provider_id"])
+    _ensure_lob_provider(provider["slug"], operation="create_check", request_id=request_id)
+    creds = _get_org_provider_config(auth.org_id, "lob")
+
+    try:
+        provider_piece = lob_create_check(
+            api_key=creds["api_key"],
+            base_url=creds.get("instance_url"),
+            payload=data.payload,
+            idempotency_key=data.idempotency_key,
+            idempotency_in_query=(data.idempotency_location == "query"),
+        )
+    except LobProviderError as exc:
+        _raise_provider_http_error("create_check", exc, request_id=request_id)
+
+    if not provider_piece.get("id"):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Check create failed: provider did not return piece id",
+        )
+
+    _upsert_piece(
+        org_id=auth.org_id,
+        company_id=resolved_company_id,
+        provider_id=provider["id"],
+        piece_type="check",
+        provider_piece=provider_piece,
+    )
+    row = _get_piece_for_auth(auth, piece_id=str(provider_piece["id"]), piece_type="check")
+    incr_metric("direct_mail.requests.processed", operation="create_check", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="create_check",
+        provider="lob",
+        company_id=resolved_company_id,
+        piece_id=str(provider_piece["id"]),
+        status=row.get("status"),
+    )
+    return _piece_row_to_response(row)
+
+
+@router.get("/checks", response_model=DirectMailPieceListResponse)
+async def list_checks(
+    request: Request,
+    company_id: str | None = Query(None),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="list_checks", provider="lob")
+    resolved_company_id = _resolve_company_id(auth, company_id)
+    _get_company(auth, resolved_company_id)
+    entitlement = _get_direct_mail_entitlement(auth.org_id, resolved_company_id)
+    provider = _get_provider_by_id(entitlement["provider_id"])
+    _ensure_lob_provider(provider["slug"], operation="list_checks", request_id=request_id)
+    creds = _get_org_provider_config(auth.org_id, "lob")
+
+    try:
+        provider_payload = lob_list_checks(
+            api_key=creds["api_key"],
+            base_url=creds.get("instance_url"),
+            params={"limit": 100},
+        )
+    except LobProviderError as exc:
+        _raise_provider_http_error("list_checks", exc, request_id=request_id)
+
+    for piece in _extract_piece_list_payload(provider_payload):
+        _upsert_piece(
+            org_id=auth.org_id,
+            company_id=resolved_company_id,
+            provider_id=provider["id"],
+            piece_type="check",
+            provider_piece=piece,
+        )
+
+    rows = supabase.table("company_direct_mail_pieces").select("*").eq(
+        "org_id", auth.org_id
+    ).eq("company_id", resolved_company_id).eq("piece_type", "check").is_("deleted_at", "null").execute().data or []
+    pieces = [_piece_row_to_response(row) for row in rows]
+    incr_metric("direct_mail.requests.processed", operation="list_checks", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="list_checks",
+        provider="lob",
+        company_id=resolved_company_id,
+        result_count=len(pieces),
+    )
+    return DirectMailPieceListResponse(pieces=pieces)
+
+
+@router.get("/checks/{piece_id}", response_model=DirectMailPieceResponse)
+async def get_check(
+    piece_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="get_check", provider="lob")
+    row = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="check")
+    provider = _get_provider_by_id(row["provider_id"])
+    _ensure_lob_provider(provider["slug"], operation="get_check", request_id=request_id)
+    creds = _get_org_provider_config(auth.org_id, "lob")
+
+    try:
+        provider_piece = lob_get_check(
+            api_key=creds["api_key"],
+            base_url=creds.get("instance_url"),
+            check_id=piece_id,
+        )
+    except LobProviderError as exc:
+        _raise_provider_http_error("get_check", exc, request_id=request_id)
+
+    _upsert_piece(
+        org_id=auth.org_id,
+        company_id=row["company_id"],
+        provider_id=row["provider_id"],
+        piece_type="check",
+        provider_piece=provider_piece,
+    )
+    response = _piece_row_to_response(_get_piece_for_auth(auth, piece_id=piece_id, piece_type="check"))
+    incr_metric("direct_mail.requests.processed", operation="get_check", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="get_check",
+        provider="lob",
+        company_id=row["company_id"],
+        piece_id=piece_id,
+        status=response.status,
+    )
+    return response
+
+
+@router.post("/checks/{piece_id}/cancel", response_model=DirectMailPieceCancelResponse)
+async def cancel_check(
+    piece_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    request_id = _request_id(request)
+    incr_metric("direct_mail.requests.received", operation="cancel_check", provider="lob")
+    row = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="check")
+    provider = _get_provider_by_id(row["provider_id"])
+    _ensure_lob_provider(provider["slug"], operation="cancel_check", request_id=request_id)
+    creds = _get_org_provider_config(auth.org_id, "lob")
+
+    try:
+        provider_piece = lob_cancel_check(
+            api_key=creds["api_key"],
+            base_url=creds.get("instance_url"),
+            check_id=piece_id,
+        )
+    except LobProviderError as exc:
+        _raise_provider_http_error("cancel_check", exc, request_id=request_id)
+
+    _upsert_piece(
+        org_id=auth.org_id,
+        company_id=row["company_id"],
+        provider_id=row["provider_id"],
+        piece_type="check",
+        provider_piece=provider_piece,
+    )
+    updated = _get_piece_for_auth(auth, piece_id=piece_id, piece_type="check")
+    incr_metric("direct_mail.requests.processed", operation="cancel_check", provider="lob")
+    log_event(
+        "direct_mail_operation_processed",
+        request_id=request_id,
+        operation="cancel_check",
+        provider="lob",
+        company_id=row["company_id"],
+        piece_id=piece_id,
+        status=updated.get("status"),
+    )
+    return DirectMailPieceCancelResponse(
+        id=updated["external_piece_id"],
+        type="check",
         status=updated.get("status") or "unknown",
         updated_at=_parse_datetime(updated.get("updated_at")) or datetime.now(timezone.utc),
     )

@@ -184,6 +184,46 @@ def test_direct_mail_happy_path_verify_postcards_letters(monkeypatch):
         "lob_cancel_letter",
         lambda **kwargs: {"id": "ltr_1", "status": "cancelled", "metadata": {"job": "b"}, "send_date": _ts()},
     )
+    monkeypatch.setattr(
+        direct_mail_router,
+        "lob_create_self_mailer",
+        lambda **kwargs: {"id": "sfm_1", "status": "queued", "metadata": {"job": "c"}, "send_date": _ts()},
+    )
+    monkeypatch.setattr(
+        direct_mail_router,
+        "lob_list_self_mailers",
+        lambda **kwargs: {"data": [{"id": "sfm_1", "status": "processed", "metadata": {"job": "c"}, "send_date": _ts()}]},
+    )
+    monkeypatch.setattr(
+        direct_mail_router,
+        "lob_get_self_mailer",
+        lambda **kwargs: {"id": "sfm_1", "status": "in_transit", "metadata": {"job": "c"}, "send_date": _ts()},
+    )
+    monkeypatch.setattr(
+        direct_mail_router,
+        "lob_cancel_self_mailer",
+        lambda **kwargs: {"id": "sfm_1", "status": "cancelled", "metadata": {"job": "c"}, "send_date": _ts()},
+    )
+    monkeypatch.setattr(
+        direct_mail_router,
+        "lob_create_check",
+        lambda **kwargs: {"id": "chk_1", "status": "queued", "metadata": {"job": "d"}, "send_date": _ts()},
+    )
+    monkeypatch.setattr(
+        direct_mail_router,
+        "lob_list_checks",
+        lambda **kwargs: {"data": [{"id": "chk_1", "status": "processed", "metadata": {"job": "d"}, "send_date": _ts()}]},
+    )
+    monkeypatch.setattr(
+        direct_mail_router,
+        "lob_get_check",
+        lambda **kwargs: {"id": "chk_1", "status": "delivered", "metadata": {"job": "d"}, "send_date": _ts()},
+    )
+    monkeypatch.setattr(
+        direct_mail_router,
+        "lob_cancel_check",
+        lambda **kwargs: {"id": "chk_1", "status": "cancelled", "metadata": {"job": "d"}, "send_date": _ts()},
+    )
 
     _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
     client = TestClient(app)
@@ -240,6 +280,46 @@ def test_direct_mail_happy_path_verify_postcards_letters(monkeypatch):
     assert letter_cancel.status_code == 200
     assert letter_cancel.json()["status"] == "canceled"
 
+    self_mailer_create = client.post(
+        "/api/direct-mail/self-mailers",
+        json={"payload": {"description": "Self mailer"}, "idempotency_key": "idem-3", "idempotency_location": "header"},
+    )
+    assert self_mailer_create.status_code == 201
+    assert self_mailer_create.json()["id"] == "sfm_1"
+    assert self_mailer_create.json()["type"] == "self_mailer"
+
+    self_mailer_list = client.get("/api/direct-mail/self-mailers")
+    assert self_mailer_list.status_code == 200
+    assert self_mailer_list.json()["pieces"][0]["status"] == "ready_for_mail"
+
+    self_mailer_get = client.get("/api/direct-mail/self-mailers/sfm_1")
+    assert self_mailer_get.status_code == 200
+    assert self_mailer_get.json()["status"] == "in_transit"
+
+    self_mailer_cancel = client.post("/api/direct-mail/self-mailers/sfm_1/cancel")
+    assert self_mailer_cancel.status_code == 200
+    assert self_mailer_cancel.json()["status"] == "canceled"
+
+    check_create = client.post(
+        "/api/direct-mail/checks",
+        json={"payload": {"description": "Check"}, "idempotency_key": "idem-4", "idempotency_location": "query"},
+    )
+    assert check_create.status_code == 201
+    assert check_create.json()["id"] == "chk_1"
+    assert check_create.json()["type"] == "check"
+
+    check_list = client.get("/api/direct-mail/checks")
+    assert check_list.status_code == 200
+    assert check_list.json()["pieces"][0]["status"] == "ready_for_mail"
+
+    check_get = client.get("/api/direct-mail/checks/chk_1")
+    assert check_get.status_code == 200
+    assert check_get.json()["status"] == "delivered"
+
+    check_cancel = client.post("/api/direct-mail/checks/chk_1/cancel")
+    assert check_cancel.status_code == 200
+    assert check_cancel.json()["status"] == "canceled"
+
     _clear()
 
 
@@ -279,7 +359,7 @@ def test_direct_mail_provider_dispatch_not_implemented_for_non_lob(monkeypatch):
 
     _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
     client = TestClient(app)
-    response = client.post("/api/direct-mail/verify-address/us", json={"payload": {"primary_line": "1 Main St"}})
+    response = client.post("/api/direct-mail/self-mailers", json={"payload": {"description": "x"}})
     assert response.status_code == 501
     detail = response.json()["detail"]
     assert detail["type"] == "provider_not_implemented"
@@ -294,11 +374,11 @@ def test_direct_mail_validation_errors(monkeypatch):
     _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
     client = TestClient(app)
 
-    missing_payload = client.post("/api/direct-mail/postcards", json={"idempotency_key": "x"})
+    missing_payload = client.post("/api/direct-mail/self-mailers", json={"idempotency_key": "x"})
     assert missing_payload.status_code == 422
 
     blank_idempotency = client.post(
-        "/api/direct-mail/letters",
+        "/api/direct-mail/checks",
         json={"payload": {"description": "x"}, "idempotency_key": "", "idempotency_location": "header"},
     )
     assert blank_idempotency.status_code == 422
@@ -315,20 +395,20 @@ def test_direct_mail_provider_error_shape_contracts(monkeypatch):
     def _raise_terminal(**kwargs):
         raise direct_mail_router.LobProviderError("Invalid Lob API key")
 
-    monkeypatch.setattr(direct_mail_router, "lob_create_postcard", _raise_transient)
-    monkeypatch.setattr(direct_mail_router, "lob_create_letter", _raise_terminal)
+    monkeypatch.setattr(direct_mail_router, "lob_create_self_mailer", _raise_transient)
+    monkeypatch.setattr(direct_mail_router, "lob_create_check", _raise_terminal)
 
     _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
     client = TestClient(app)
 
-    transient = client.post("/api/direct-mail/postcards", json={"payload": {"description": "x"}})
+    transient = client.post("/api/direct-mail/self-mailers", json={"payload": {"description": "x"}})
     assert transient.status_code == 503
     transient_detail = transient.json()["detail"]
     assert transient_detail["type"] == "provider_error"
     assert transient_detail["provider"] == "lob"
     assert transient_detail["retryable"] is True
 
-    terminal = client.post("/api/direct-mail/letters", json={"payload": {"description": "x"}})
+    terminal = client.post("/api/direct-mail/checks", json={"payload": {"description": "x"}})
     assert terminal.status_code == 502
     terminal_detail = terminal.json()["detail"]
     assert terminal_detail["type"] == "provider_error"
@@ -351,8 +431,18 @@ def test_direct_mail_create_dispatches_idempotency_to_lob(monkeypatch):
         captured["letter"] = (kwargs.get("idempotency_key"), kwargs.get("idempotency_in_query"))
         return {"id": "ltr_1", "status": "queued"}
 
+    def _create_self_mailer(**kwargs):
+        captured["self_mailer"] = (kwargs.get("idempotency_key"), kwargs.get("idempotency_in_query"))
+        return {"id": "sfm_1", "status": "queued"}
+
+    def _create_check(**kwargs):
+        captured["check"] = (kwargs.get("idempotency_key"), kwargs.get("idempotency_in_query"))
+        return {"id": "chk_1", "status": "queued"}
+
     monkeypatch.setattr(direct_mail_router, "lob_create_postcard", _create_postcard)
     monkeypatch.setattr(direct_mail_router, "lob_create_letter", _create_letter)
+    monkeypatch.setattr(direct_mail_router, "lob_create_self_mailer", _create_self_mailer)
+    monkeypatch.setattr(direct_mail_router, "lob_create_check", _create_check)
 
     _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
     client = TestClient(app)
@@ -365,8 +455,20 @@ def test_direct_mail_create_dispatches_idempotency_to_lob(monkeypatch):
         "/api/direct-mail/letters",
         json={"payload": {"description": "y"}, "idempotency_key": "idem-2", "idempotency_location": "query"},
     )
+    sfm = client.post(
+        "/api/direct-mail/self-mailers",
+        json={"payload": {"description": "z"}, "idempotency_key": "idem-3", "idempotency_location": "header"},
+    )
+    chk = client.post(
+        "/api/direct-mail/checks",
+        json={"payload": {"description": "w"}, "idempotency_key": "idem-4", "idempotency_location": "query"},
+    )
     assert psc.status_code == 201
     assert ltr.status_code == 201
+    assert sfm.status_code == 201
+    assert chk.status_code == 201
     assert captured["postcard"] == ("idem-1", False)
     assert captured["letter"] == ("idem-2", True)
+    assert captured["self_mailer"] == ("idem-3", False)
+    assert captured["check"] == ("idem-4", True)
     _clear()
