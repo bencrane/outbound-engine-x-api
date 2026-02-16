@@ -234,6 +234,7 @@ Implementation gates:
 
 Current rollout progress:
 - Slice 1 (Leads + lead lifecycle): in progress with client bulk/update lifecycle methods, campaign-router integration updates, and strict endpoint registry/test guardrails.
+- Slice 2 (Campaigns advanced): in progress with EmailBison sequence-step and schedule contract integration.
 
 ### Phase 1 - Provider foundation + read paths
 

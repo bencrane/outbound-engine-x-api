@@ -17,6 +17,8 @@ from src.domain.provider_errors import (
     provider_error_http_status,
 )
 from src.models.campaigns import (
+    CampaignScheduleResponse,
+    CampaignScheduleUpsertRequest,
     CampaignCreateRequest,
     CampaignResponse,
     CampaignStatusUpdateRequest,
@@ -53,6 +55,10 @@ from src.providers.emailbison.client import (
     create_lead as emailbison_create_lead,
     EmailBisonProviderError,
     create_campaign as emailbison_create_campaign,
+    create_campaign_schedule as emailbison_create_campaign_schedule,
+    create_campaign_sequence_steps as emailbison_create_campaign_sequence_steps,
+    get_campaign_schedule as emailbison_get_campaign_schedule,
+    get_campaign_sequence_steps as emailbison_get_campaign_sequence_steps,
     get_campaign_stats as emailbison_get_campaign_stats,
     list_campaign_leads as emailbison_list_campaign_leads,
     list_replies as emailbison_list_replies,
@@ -559,14 +565,26 @@ async def get_campaign_sequence(
     auth: AuthContext = Depends(get_current_auth),
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
-    _require_smartlead_email_entitlement(auth.org_id, campaign["company_id"])
-    api_key = _get_org_provider_config(auth.org_id, "smartlead")["api_key"]
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
 
     try:
-        sequence = smartlead_get_campaign_sequence(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-        )
+        if provider_slug == "smartlead":
+            sequence = smartlead_get_campaign_sequence(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+            )
+        elif provider_slug == "emailbison":
+            sequence = emailbison_get_campaign_sequence_steps(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported email_outreach provider: {provider_slug}",
+            )
     except SmartleadProviderError as exc:
         # Fallback to latest local snapshot if provider read is unavailable.
         snapshot = supabase.table("company_campaign_sequences").select(
@@ -582,6 +600,20 @@ async def get_campaign_sequence(
                 updated_at=latest["updated_at"],
             )
         _raise_provider_http_error("smartlead", "campaign_sequence_fetch", exc)
+    except EmailBisonProviderError as exc:
+        snapshot = supabase.table("company_campaign_sequences").select(
+            "version, sequence_payload, updated_at"
+        ).eq("org_id", auth.org_id).eq("company_campaign_id", campaign_id).is_("deleted_at", "null").execute()
+        if snapshot.data:
+            latest = sorted(snapshot.data, key=lambda row: row["version"], reverse=True)[0]
+            return CampaignSequenceResponse(
+                campaign_id=campaign_id,
+                sequence=latest["sequence_payload"],
+                source="local_snapshot",
+                version=latest["version"],
+                updated_at=latest["updated_at"],
+            )
+        _raise_provider_http_error("emailbison", "campaign_sequence_fetch", exc)
 
     snapshots = supabase.table("company_campaign_sequences").select(
         "version"
@@ -614,17 +646,51 @@ async def save_campaign_sequence(
     auth: AuthContext = Depends(get_current_auth),
 ):
     campaign = _get_campaign_for_auth(auth, campaign_id)
-    _require_smartlead_email_entitlement(auth.org_id, campaign["company_id"])
-    api_key = _get_org_provider_config(auth.org_id, "smartlead")["api_key"]
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
 
     try:
-        provider_payload = smartlead_save_campaign_sequence(
-            api_key=api_key,
-            campaign_id=campaign["external_campaign_id"],
-            sequence=data.sequence,
-        )
+        if provider_slug == "smartlead":
+            provider_payload = smartlead_save_campaign_sequence(
+                api_key=provider_credentials["api_key"],
+                campaign_id=campaign["external_campaign_id"],
+                sequence=data.sequence,
+            )
+        elif provider_slug == "emailbison":
+            sequence_steps: list[dict[str, Any]] = []
+            for idx, step in enumerate(data.sequence, start=1):
+                delay_details = step.get("seq_delay_details") or {}
+                wait_in_days = delay_details.get("delay_in_days")
+                if wait_in_days is None:
+                    wait_in_days = step.get("wait_in_days")
+                if wait_in_days is None:
+                    wait_in_days = 0
+                sequence_steps.append(
+                    {
+                        "email_subject": step.get("subject") or step.get("email_subject") or f"Step {idx}",
+                        "email_body": step.get("email_body") or "",
+                        "order": step.get("seq_number") or step.get("order") or idx,
+                        "wait_in_days": int(wait_in_days),
+                        "variant": bool(step.get("variant", False)),
+                        "thread_reply": bool(step.get("thread_reply", False)),
+                    }
+                )
+            provider_payload = emailbison_create_campaign_sequence_steps(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+                title=campaign.get("name") or f"Campaign {campaign_id} sequence",
+                sequence_steps=sequence_steps,
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported email_outreach provider: {provider_slug}",
+            )
     except SmartleadProviderError as exc:
         _raise_provider_http_error("smartlead", "campaign_sequence_save", exc)
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("emailbison", "campaign_sequence_save", exc)
 
     snapshots = supabase.table("company_campaign_sequences").select(
         "version"
@@ -656,6 +722,70 @@ async def save_campaign_sequence(
         source="provider",
         version=row["version"],
         updated_at=row["updated_at"],
+    )
+
+
+@router.get("/{campaign_id}/schedule", response_model=CampaignScheduleResponse)
+async def get_campaign_schedule(
+    campaign_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
+    try:
+        if provider_slug == "emailbison":
+            schedule = emailbison_get_campaign_schedule(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported email_outreach provider: {provider_slug}",
+            )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("emailbison", "campaign_schedule_fetch", exc)
+
+    return CampaignScheduleResponse(
+        campaign_id=campaign_id,
+        schedule=schedule,
+        source="provider",
+        updated_at=datetime.now(timezone.utc),
+    )
+
+
+@router.post("/{campaign_id}/schedule", response_model=CampaignScheduleResponse)
+async def save_campaign_schedule(
+    campaign_id: str,
+    data: CampaignScheduleUpsertRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    provider_slug = _get_campaign_provider_slug(campaign)
+    provider_credentials = _get_org_provider_config(auth.org_id, provider_slug)
+    try:
+        if provider_slug == "emailbison":
+            schedule = emailbison_create_campaign_schedule(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                campaign_id=campaign["external_campaign_id"],
+                schedule=data.model_dump(),
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported email_outreach provider: {provider_slug}",
+            )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("emailbison", "campaign_schedule_save", exc)
+
+    return CampaignScheduleResponse(
+        campaign_id=campaign_id,
+        schedule=schedule,
+        source="provider",
+        updated_at=datetime.now(timezone.utc),
     )
 
 

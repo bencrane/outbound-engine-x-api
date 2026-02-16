@@ -302,6 +302,153 @@ def test_save_campaign_sequence_success(monkeypatch):
     _clear()
 
 
+def test_get_campaign_sequence_emailbison_provider(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "123",
+            "name": "Campaign",
+            "status": "DRAFTED",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_get_campaign_sequence_steps",
+        lambda **kwargs: [{"order": 1, "email_subject": "Hi", "email_body": "Body", "wait_in_days": 0}],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/campaigns/cmp-1/sequence")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "provider"
+    assert body["sequence"][0]["email_subject"] == "Hi"
+
+    _clear()
+
+
+def test_save_campaign_sequence_emailbison_provider(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "123",
+            "name": "Campaign",
+            "status": "DRAFTED",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+
+    captured: dict[str, object] = {}
+
+    def _create_sequence(**kwargs):
+        captured["title"] = kwargs["title"]
+        captured["sequence_steps"] = kwargs["sequence_steps"]
+        return {"id": 11, "sequence_steps": kwargs["sequence_steps"]}
+
+    monkeypatch.setattr(campaigns_router, "emailbison_create_campaign_sequence_steps", _create_sequence)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/campaigns/cmp-1/sequence",
+        json={"sequence": [{"seq_number": 1, "subject": "Hi", "email_body": "Body", "seq_delay_details": {"delay_in_days": 1}}]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["version"] == 1
+    assert captured["title"] == "Campaign"
+    steps = captured["sequence_steps"]
+    assert isinstance(steps, list)
+    assert steps[0]["wait_in_days"] == 1
+    assert steps[0]["email_subject"] == "Hi"
+
+    _clear()
+
+
+def test_campaign_schedule_emailbison_get_and_save(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "123",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_get_campaign_schedule",
+        lambda **kwargs: {"timezone": "America/New_York", "start_time": "09:00", "end_time": "17:00"},
+    )
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_create_campaign_schedule",
+        lambda **kwargs: kwargs["schedule"],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    get_response = client.get("/api/campaigns/cmp-1/schedule")
+    assert get_response.status_code == 200
+    assert get_response.json()["schedule"]["timezone"] == "America/New_York"
+
+    save_response = client.post(
+        "/api/campaigns/cmp-1/schedule",
+        json={
+            "monday": True,
+            "tuesday": True,
+            "wednesday": True,
+            "thursday": True,
+            "friday": True,
+            "saturday": False,
+            "sunday": False,
+            "start_time": "09:00",
+            "end_time": "17:00",
+            "timezone": "America/New_York",
+            "save_as_template": False,
+        },
+    )
+    assert save_response.status_code == 200
+    assert save_response.json()["schedule"]["timezone"] == "America/New_York"
+
+    _clear()
+
+
 def test_get_campaign_sequence_falls_back_to_local_snapshot(monkeypatch):
     tables = _base_tables()
     tables["company_campaigns"] = [

@@ -181,6 +181,64 @@ def test_update_lead_status_uses_status_endpoint(monkeypatch):
     ]
 
 
+def test_get_and_create_campaign_sequence_steps_use_sequence_endpoint(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        if kwargs["method"] == "GET":
+            return _FakeResponse(200, {"data": [{"order": 1}]})
+        return _FakeResponse(200, {"data": {"id": 10, "sequence_steps": [{"order": 1}]}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    got = emailbison_client.get_campaign_sequence_steps(
+        api_key="k",
+        campaign_id=22,
+        instance_url="https://x.example",
+    )
+    created = emailbison_client.create_campaign_sequence_steps(
+        api_key="k",
+        campaign_id=22,
+        title="Seq",
+        sequence_steps=[{"email_subject": "Hello", "email_body": "Body", "wait_in_days": 0}],
+        instance_url="https://x.example",
+    )
+
+    assert got == [{"order": 1}]
+    assert created["id"] == 10
+    assert calls[0] == ("GET", "https://x.example/api/campaigns/22/sequence-steps", None)
+    assert calls[1][0] == "POST"
+    assert calls[1][1] == "https://x.example/api/campaigns/22/sequence-steps"
+
+
+def test_get_and_create_campaign_schedule_use_schedule_endpoint(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        if kwargs["method"] == "GET":
+            return _FakeResponse(200, {"data": {"timezone": "America/New_York"}})
+        return _FakeResponse(200, {"data": {"timezone": "America/New_York", "monday": True}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    got = emailbison_client.get_campaign_schedule(
+        api_key="k",
+        campaign_id=99,
+        instance_url="https://x.example",
+    )
+    created = emailbison_client.create_campaign_schedule(
+        api_key="k",
+        campaign_id=99,
+        schedule={"monday": True},
+        instance_url="https://x.example",
+    )
+
+    assert got["timezone"] == "America/New_York"
+    assert created["monday"] is True
+    assert calls[0] == ("GET", "https://x.example/api/campaigns/99/schedule", None)
+    assert calls[1] == ("POST", "https://x.example/api/campaigns/99/schedule", {"monday": True})
+
+
 def test_registry_covers_all_public_client_methods():
     excluded = {"webhook_resource_paths"}
     public_callables = {

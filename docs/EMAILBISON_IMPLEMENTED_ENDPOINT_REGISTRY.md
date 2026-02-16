@@ -30,6 +30,16 @@ If a new public EmailBison client method is added without registry entry, tests 
 - `POST /api/campaigns/{campaign_id}/leads/stop-future-emails` -> `stop_future_emails_for_leads()`
 - `DELETE /api/campaigns/{campaign_id}/leads` -> `remove_leads_from_campaign()`
 
+## Slice 2 Coverage (Campaigns Advanced)
+
+- `GET /api/campaigns/{campaign_id}/sequence-steps` -> `get_campaign_sequence_steps()`
+- `POST /api/campaigns/{campaign_id}/sequence-steps` -> `create_campaign_sequence_steps()`
+- `GET /api/campaigns/{campaign_id}/schedule` -> `get_campaign_schedule()`
+- `POST /api/campaigns/{campaign_id}/schedule` -> `create_campaign_schedule()`
+- `GET /api/campaigns/{campaign_id}/sending-schedule` -> `get_campaign_sending_schedule()`
+- `GET /api/campaigns/{campaign_id}/sender-emails` -> `get_campaign_sender_emails()`
+- `GET /api/campaigns/{campaign_id}/line-area-chart-stats` -> `get_campaign_line_area_chart_stats()`
+
 ## Guardrails
 
 - Phase 3 webhook signature verification remains blocked until `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16` is resolved.

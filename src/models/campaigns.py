@@ -43,3 +43,24 @@ class CampaignResponse(BaseModel):
     created_by_user_id: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class CampaignScheduleUpsertRequest(BaseModel):
+    monday: bool
+    tuesday: bool
+    wednesday: bool
+    thursday: bool
+    friday: bool
+    saturday: bool
+    sunday: bool
+    start_time: str
+    end_time: str
+    timezone: str
+    save_as_template: bool = False
+
+
+class CampaignScheduleResponse(BaseModel):
+    campaign_id: str
+    schedule: dict
+    source: str
+    updated_at: datetime

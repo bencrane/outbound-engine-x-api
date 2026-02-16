@@ -241,6 +241,145 @@ def update_campaign_status(
     raise EmailBisonProviderError("Unexpected EmailBison campaign status response type")
 
 
+def get_campaign_sequence_steps(
+    api_key: str,
+    campaign_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/sequence-steps"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison campaign sequence steps response shape")
+
+
+def create_campaign_sequence_steps(
+    api_key: str,
+    campaign_id: int | str,
+    title: str,
+    sequence_steps: list[dict[str, Any]],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/sequence-steps"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"title": title, "sequence_steps": sequence_steps},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison create sequence steps response type")
+
+
+def get_campaign_schedule(
+    api_key: str,
+    campaign_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/schedule"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison campaign schedule response type")
+
+
+def create_campaign_schedule(
+    api_key: str,
+    campaign_id: int | str,
+    schedule: dict[str, Any],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/schedule"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=schedule,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison create campaign schedule response type")
+
+
+def get_campaign_sending_schedule(
+    api_key: str,
+    campaign_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/sending-schedule"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison campaign sending schedule response shape")
+
+
+def get_campaign_sender_emails(
+    api_key: str,
+    campaign_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/sender-emails"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison campaign sender emails response shape")
+
+
+def get_campaign_line_area_chart_stats(
+    api_key: str,
+    campaign_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/line-area-chart-stats"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison line-area-chart stats response shape")
+
+
 def list_leads(
     api_key: str,
     search: str | None = None,
@@ -641,6 +780,13 @@ EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
         {"method": "PATCH", "path": "/api/campaigns/{campaign_id}/pause"},
         {"method": "PATCH", "path": "/api/campaigns/{campaign_id}/archive"},
     ],
+    "get_campaign_sequence_steps": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/sequence-steps"}],
+    "create_campaign_sequence_steps": [{"method": "POST", "path": "/api/campaigns/{campaign_id}/sequence-steps"}],
+    "get_campaign_schedule": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/schedule"}],
+    "create_campaign_schedule": [{"method": "POST", "path": "/api/campaigns/{campaign_id}/schedule"}],
+    "get_campaign_sending_schedule": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/sending-schedule"}],
+    "get_campaign_sender_emails": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/sender-emails"}],
+    "get_campaign_line_area_chart_stats": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/line-area-chart-stats"}],
     "list_leads": [{"method": "GET", "path": _EP_LEADS}],
     "create_lead": [{"method": "POST", "path": _EP_LEADS}],
     "create_leads_bulk": [{"method": "POST", "path": "/api/leads/multiple"}],
