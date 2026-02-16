@@ -62,6 +62,33 @@ If a new public EmailBison client method is added without registry entry, tests 
 - `POST /api/sender-emails/{senderEmailId}/check-mx-records` -> `check_sender_email_mx_records()`
 - `POST /api/sender-emails/bulk-check-missing-mx-records` -> `bulk_check_missing_mx_records()`
 
+Notes:
+- Warmup reads always pass explicit `start_date` and `end_date`.
+- Healthcheck is currently canonicalized to MX-record endpoints only (`check-mx-records`, `bulk-check-missing-mx-records`); no broader sender health endpoint surfaced in live `user-emailbison` spec output.
+
+## Slice 5 Coverage (Tags + Variables + Blocklists)
+
+- `GET /api/tags` -> `list_tags()`
+- `POST /api/tags` -> `create_tag()`
+- `GET /api/tags/{id}` -> `get_tag()`
+- `DELETE /api/tags/{tag_id}` -> `delete_tag()`
+- `POST /api/tags/attach-to-campaigns` -> `attach_tags_to_campaigns()`
+- `POST /api/tags/remove-from-campaigns` -> `remove_tags_from_campaigns()`
+- `POST /api/tags/attach-to-leads` -> `attach_tags_to_leads()`
+- `POST /api/tags/remove-from-leads` -> `remove_tags_from_leads()`
+- `POST /api/tags/attach-to-sender-emails` -> `attach_tags_to_sender_emails()`
+- `POST /api/tags/remove-from-sender-emails` -> `remove_tags_from_sender_emails()`
+- `GET /api/custom-variables` -> `list_custom_variables()`
+- `POST /api/custom-variables` -> `create_custom_variable()`
+- `GET /api/blacklisted-emails` -> `list_blacklisted_emails()`
+- `POST /api/blacklisted-emails` -> `create_blacklisted_email()`
+- `POST /api/blacklisted-emails/bulk` -> `bulk_create_blacklisted_emails()`
+- `DELETE /api/blacklisted-emails/{blacklisted_email_id}` -> `delete_blacklisted_email()`
+- `GET /api/blacklisted-domains` -> `list_blacklisted_domains()`
+- `POST /api/blacklisted-domains` -> `create_blacklisted_domain()`
+- `POST /api/blacklisted-domains/bulk` -> `bulk_create_blacklisted_domains()`
+- `DELETE /api/blacklisted-domains/{blacklisted_domain_id}` -> `delete_blacklisted_domain()`
+
 ## Guardrails
 
 - Phase 3 webhook signature verification remains blocked until `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16` is resolved.

@@ -1,6 +1,6 @@
 # EmailBison Canonical Handoff
 
-Generated: `2026-02-16T03:06:00Z` (UTC)
+Generated: `2026-02-16T04:05:00Z` (UTC)
 
 ## Canonical Source + Naming Caveat
 
@@ -121,6 +121,45 @@ Confidence rubric:
   - Both flat filter params (`tag_ids`, `without_tags`) and nested filter forms (`filters.without_tags`) appear.
   - Warmup specs mark date bounds as required but descriptions also mention defaults; integration passes explicit dates to avoid ambiguity.
 - **Confidence**: **High**
+
+### Tags + Variables + Blocklists
+
+- **Endpoints**
+  - Tags:
+    - `GET /api/tags`
+    - `POST /api/tags`
+    - `GET /api/tags/{id}`
+    - `DELETE /api/tags/{tag_id}`
+    - `POST /api/tags/attach-to-campaigns`
+    - `POST /api/tags/remove-from-campaigns`
+    - `POST /api/tags/attach-to-leads`
+    - `POST /api/tags/remove-from-leads`
+    - `POST /api/tags/attach-to-sender-emails`
+    - `POST /api/tags/remove-from-sender-emails`
+  - Custom variables:
+    - `GET /api/custom-variables`
+    - `POST /api/custom-variables`
+  - Blocklists:
+    - `GET /api/blacklisted-emails`
+    - `POST /api/blacklisted-emails`
+    - `POST /api/blacklisted-emails/bulk`
+    - `DELETE /api/blacklisted-emails/{blacklisted_email_id}`
+    - `GET /api/blacklisted-domains`
+    - `POST /api/blacklisted-domains`
+    - `POST /api/blacklisted-domains/bulk`
+    - `DELETE /api/blacklisted-domains/{blacklisted_domain_id}`
+- **Required params**
+  - Tag create requires `name`; attach/detach flows require `tag_ids` plus target IDs.
+  - Custom variable create requires `name`.
+  - Blocklist create requires `email` or `domain`; bulk creates require list payloads.
+- **Key response fields**
+  - Tags/custom variables: `id`, `name`, `default`, `created_at`, `updated_at`.
+  - Blocklists: `id`, `email|domain`, `created_at`, `updated_at`.
+  - Attach/remove and delete operations: `success`, `message`.
+- **Known caveats/inconsistencies**
+  - Live `user-emailbison` spec output currently surfaces custom-variable **list/create** only; update/delete endpoints are not presently discoverable.
+  - Live `user-emailbison` spec output currently surfaces tag **get/create/list/delete** plus attach/detach flows; tag update endpoint is not presently discoverable.
+- **Confidence**: **High** for listed endpoints, **Medium** for full CRUD completeness claims where update endpoints are not surfaced.
 
 ### Webhooks
 
@@ -246,6 +285,7 @@ Current rollout progress:
 - Slice 2 (Campaigns advanced): in progress with EmailBison sequence-step and schedule contract integration.
 - Slice 3 (Inbox/replies): in progress with reply detail/thread surface and campaign-reply contract routing.
 - Slice 4 (Sender emails + warmup + healthcheck): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/inboxes.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
+- Slice 5 (Tags + variables + blocklists): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 
 ### Phase 1 - Provider foundation + read paths
 

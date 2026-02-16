@@ -13,6 +13,7 @@ from src.routers import (
     internal_reconciliation,
     inboxes,
     campaigns,
+    email_outreach,
     linkedin_campaigns,
     webhooks,
     analytics,
@@ -51,6 +52,7 @@ app.include_router(internal_provisioning.router)
 app.include_router(internal_reconciliation.router)
 app.include_router(inboxes.router)
 app.include_router(campaigns.router)
+app.include_router(email_outreach.router)
 app.include_router(linkedin_campaigns.router)
 app.include_router(webhooks.router)
 app.include_router(analytics.router)

@@ -378,6 +378,130 @@ def test_warmup_and_mx_check_endpoints(monkeypatch):
     assert calls[5] == ("POST", "https://x.example/api/sender-emails/bulk-check-missing-mx-records", None)
 
 
+def test_tags_and_custom_variables_endpoints(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        if kwargs["method"] == "GET" and kwargs["url"].endswith("/api/tags"):
+            return _FakeResponse(200, {"data": [{"id": 7, "name": "Important"}]})
+        if kwargs["method"] == "GET" and kwargs["url"].endswith("/api/custom-variables"):
+            return _FakeResponse(200, {"data": [{"id": 9, "name": "linkedin"}]})
+        return _FakeResponse(200, {"data": {"id": 7, "name": "Important", "success": True}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    emailbison_client.list_tags(api_key="k", instance_url="https://x.example")
+    emailbison_client.create_tag(api_key="k", name="Important", default=True, instance_url="https://x.example")
+    emailbison_client.get_tag(api_key="k", tag_id=7, instance_url="https://x.example")
+    emailbison_client.delete_tag(api_key="k", tag_id=7, instance_url="https://x.example")
+    emailbison_client.attach_tags_to_campaigns(
+        api_key="k",
+        tag_ids=[1],
+        campaign_ids=[2],
+        skip_webhooks=True,
+        instance_url="https://x.example",
+    )
+    emailbison_client.remove_tags_from_campaigns(
+        api_key="k",
+        tag_ids=[1],
+        campaign_ids=[2],
+        skip_webhooks=True,
+        instance_url="https://x.example",
+    )
+    emailbison_client.attach_tags_to_leads(
+        api_key="k",
+        tag_ids=[1],
+        lead_ids=[3],
+        skip_webhooks=True,
+        instance_url="https://x.example",
+    )
+    emailbison_client.remove_tags_from_leads(
+        api_key="k",
+        tag_ids=[1],
+        lead_ids=[3],
+        skip_webhooks=True,
+        instance_url="https://x.example",
+    )
+    emailbison_client.attach_tags_to_sender_emails(
+        api_key="k",
+        tag_ids=[1],
+        sender_email_ids=[4],
+        skip_webhooks=True,
+        instance_url="https://x.example",
+    )
+    emailbison_client.remove_tags_from_sender_emails(
+        api_key="k",
+        tag_ids=[1],
+        sender_email_ids=[4],
+        skip_webhooks=True,
+        instance_url="https://x.example",
+    )
+    emailbison_client.list_custom_variables(api_key="k", instance_url="https://x.example")
+    emailbison_client.create_custom_variable(api_key="k", name="linkedin", instance_url="https://x.example")
+
+    assert calls[0] == ("GET", "https://x.example/api/tags", None)
+    assert calls[1] == ("POST", "https://x.example/api/tags", {"name": "Important", "default": True})
+    assert calls[2] == ("GET", "https://x.example/api/tags/7", None)
+    assert calls[3] == ("DELETE", "https://x.example/api/tags/7", None)
+    assert calls[4] == (
+        "POST",
+        "https://x.example/api/tags/attach-to-campaigns",
+        {"tag_ids": [1], "campaign_ids": [2], "skip_webhooks": True},
+    )
+    assert calls[5] == (
+        "POST",
+        "https://x.example/api/tags/remove-from-campaigns",
+        {"tag_ids": [1], "campaign_ids": [2], "skip_webhooks": True},
+    )
+    assert calls[10] == ("GET", "https://x.example/api/custom-variables", None)
+    assert calls[11] == ("POST", "https://x.example/api/custom-variables", {"name": "linkedin"})
+
+
+def test_blacklist_endpoints(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        if kwargs["method"] == "GET":
+            return _FakeResponse(200, {"data": [{"id": 1}]})
+        if kwargs["method"] == "DELETE":
+            return _FakeResponse(200, {"data": {"success": True}})
+        if kwargs["url"].endswith("/bulk"):
+            return _FakeResponse(201, {"data": [{"id": 1}]})
+        return _FakeResponse(201, {"data": {"id": 1}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    emailbison_client.list_blacklisted_emails(api_key="k", instance_url="https://x.example")
+    emailbison_client.create_blacklisted_email(api_key="k", email="a@example.com", instance_url="https://x.example")
+    emailbison_client.bulk_create_blacklisted_emails(
+        api_key="k", emails=["a@example.com", "b@example.com"], instance_url="https://x.example"
+    )
+    emailbison_client.delete_blacklisted_email(api_key="k", blacklisted_email_id=1, instance_url="https://x.example")
+    emailbison_client.list_blacklisted_domains(api_key="k", instance_url="https://x.example")
+    emailbison_client.create_blacklisted_domain(api_key="k", domain="example.com", instance_url="https://x.example")
+    emailbison_client.bulk_create_blacklisted_domains(
+        api_key="k", domains=["a.com", "b.com"], instance_url="https://x.example"
+    )
+    emailbison_client.delete_blacklisted_domain(api_key="k", blacklisted_domain_id=1, instance_url="https://x.example")
+
+    assert calls[0] == ("GET", "https://x.example/api/blacklisted-emails", None)
+    assert calls[1] == ("POST", "https://x.example/api/blacklisted-emails", {"email": "a@example.com"})
+    assert calls[2] == (
+        "POST",
+        "https://x.example/api/blacklisted-emails/bulk",
+        {"emails": ["a@example.com", "b@example.com"]},
+    )
+    assert calls[3] == ("DELETE", "https://x.example/api/blacklisted-emails/1", None)
+    assert calls[4] == ("GET", "https://x.example/api/blacklisted-domains", None)
+    assert calls[5] == ("POST", "https://x.example/api/blacklisted-domains", {"domain": "example.com"})
+    assert calls[6] == (
+        "POST",
+        "https://x.example/api/blacklisted-domains/bulk",
+        {"domains": ["a.com", "b.com"]},
+    )
+    assert calls[7] == ("DELETE", "https://x.example/api/blacklisted-domains/1", None)
+
+
 def test_registry_covers_all_public_client_methods():
     excluded = {"webhook_resource_paths"}
     public_callables = {

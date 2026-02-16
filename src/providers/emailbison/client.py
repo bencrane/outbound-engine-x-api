@@ -19,6 +19,10 @@ _EP_LEADS = "/api/leads"
 _EP_REPLIES = "/api/replies"
 _EP_SENDER_EMAILS = "/api/sender-emails"
 _EP_WARMUP_SENDER_EMAILS = "/api/warmup/sender-emails"
+_EP_TAGS = "/api/tags"
+_EP_CUSTOM_VARIABLES = "/api/custom-variables"
+_EP_BLACKLISTED_EMAILS = "/api/blacklisted-emails"
+_EP_BLACKLISTED_DOMAINS = "/api/blacklisted-domains"
 
 
 class EmailBisonProviderError(Exception):
@@ -993,6 +997,420 @@ def bulk_check_missing_mx_records(
     raise EmailBisonProviderError("Unexpected EmailBison bulk mx-record check response type")
 
 
+def list_tags(
+    api_key: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[_EP_TAGS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison tags response shape")
+
+
+def create_tag(
+    api_key: str,
+    name: str,
+    default: bool | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"name": name}
+    if default is not None:
+        payload["default"] = default
+    data = _request_json(
+        method="POST",
+        candidate_paths=[_EP_TAGS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison create tag response type")
+
+
+def get_tag(
+    api_key: str,
+    tag_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"{_EP_TAGS}/{tag_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison get tag response type")
+
+
+def delete_tag(
+    api_key: str,
+    tag_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        candidate_paths=[f"{_EP_TAGS}/{tag_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison delete tag response type")
+
+
+def attach_tags_to_leads(
+    api_key: str,
+    tag_ids: list[int],
+    lead_ids: list[int],
+    skip_webhooks: bool | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"tag_ids": tag_ids, "lead_ids": lead_ids}
+    if skip_webhooks is not None:
+        payload["skip_webhooks"] = skip_webhooks
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_TAGS}/attach-to-leads"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison attach tags to leads response type")
+
+
+def remove_tags_from_leads(
+    api_key: str,
+    tag_ids: list[int],
+    lead_ids: list[int],
+    skip_webhooks: bool | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"tag_ids": tag_ids, "lead_ids": lead_ids}
+    if skip_webhooks is not None:
+        payload["skip_webhooks"] = skip_webhooks
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_TAGS}/remove-from-leads"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison remove tags from leads response type")
+
+
+def attach_tags_to_campaigns(
+    api_key: str,
+    tag_ids: list[int],
+    campaign_ids: list[int],
+    skip_webhooks: bool | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"tag_ids": tag_ids, "campaign_ids": campaign_ids}
+    if skip_webhooks is not None:
+        payload["skip_webhooks"] = skip_webhooks
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_TAGS}/attach-to-campaigns"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison attach tags to campaigns response type")
+
+
+def remove_tags_from_campaigns(
+    api_key: str,
+    tag_ids: list[int],
+    campaign_ids: list[int],
+    skip_webhooks: bool | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"tag_ids": tag_ids, "campaign_ids": campaign_ids}
+    if skip_webhooks is not None:
+        payload["skip_webhooks"] = skip_webhooks
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_TAGS}/remove-from-campaigns"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison remove tags from campaigns response type")
+
+
+def attach_tags_to_sender_emails(
+    api_key: str,
+    tag_ids: list[int],
+    sender_email_ids: list[int],
+    skip_webhooks: bool | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"tag_ids": tag_ids, "sender_email_ids": sender_email_ids}
+    if skip_webhooks is not None:
+        payload["skip_webhooks"] = skip_webhooks
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_TAGS}/attach-to-sender-emails"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison attach tags to sender emails response type")
+
+
+def remove_tags_from_sender_emails(
+    api_key: str,
+    tag_ids: list[int],
+    sender_email_ids: list[int],
+    skip_webhooks: bool | None = None,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"tag_ids": tag_ids, "sender_email_ids": sender_email_ids}
+    if skip_webhooks is not None:
+        payload["skip_webhooks"] = skip_webhooks
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_TAGS}/remove-from-sender-emails"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison remove tags from sender emails response type")
+
+
+def list_custom_variables(
+    api_key: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[_EP_CUSTOM_VARIABLES],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison custom variables response shape")
+
+
+def create_custom_variable(
+    api_key: str,
+    name: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[_EP_CUSTOM_VARIABLES],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"name": name},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison create custom variable response type")
+
+
+def list_blacklisted_emails(
+    api_key: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[_EP_BLACKLISTED_EMAILS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison blacklisted emails response shape")
+
+
+def create_blacklisted_email(
+    api_key: str,
+    email: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[_EP_BLACKLISTED_EMAILS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"email": email},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison create blacklisted email response type")
+
+
+def bulk_create_blacklisted_emails(
+    api_key: str,
+    emails: list[str],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_BLACKLISTED_EMAILS}/bulk"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"emails": emails},
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison bulk blacklisted emails response shape")
+
+
+def delete_blacklisted_email(
+    api_key: str,
+    blacklisted_email_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        candidate_paths=[f"{_EP_BLACKLISTED_EMAILS}/{blacklisted_email_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison delete blacklisted email response type")
+
+
+def list_blacklisted_domains(
+    api_key: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[_EP_BLACKLISTED_DOMAINS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison blacklisted domains response shape")
+
+
+def create_blacklisted_domain(
+    api_key: str,
+    domain: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[_EP_BLACKLISTED_DOMAINS],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"domain": domain},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison create blacklisted domain response type")
+
+
+def bulk_create_blacklisted_domains(
+    api_key: str,
+    domains: list[str],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_BLACKLISTED_DOMAINS}/bulk"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"domains": domains},
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison bulk blacklisted domains response shape")
+
+
+def delete_blacklisted_domain(
+    api_key: str,
+    blacklisted_domain_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        candidate_paths=[f"{_EP_BLACKLISTED_DOMAINS}/{blacklisted_domain_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison delete blacklisted domain response type")
+
+
 def webhook_resource_paths(webhook_id: int | str) -> dict[str, str]:
     """
     Build known webhook resource path variants from current spec outputs.
@@ -1154,5 +1572,25 @@ EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     ],
     "check_sender_email_mx_records": [{"method": "POST", "path": "/api/sender-emails/{senderEmailId}/check-mx-records"}],
     "bulk_check_missing_mx_records": [{"method": "POST", "path": "/api/sender-emails/bulk-check-missing-mx-records"}],
+    "list_tags": [{"method": "GET", "path": _EP_TAGS}],
+    "create_tag": [{"method": "POST", "path": _EP_TAGS}],
+    "get_tag": [{"method": "GET", "path": "/api/tags/{id}"}],
+    "delete_tag": [{"method": "DELETE", "path": "/api/tags/{tag_id}"}],
+    "attach_tags_to_leads": [{"method": "POST", "path": "/api/tags/attach-to-leads"}],
+    "remove_tags_from_leads": [{"method": "POST", "path": "/api/tags/remove-from-leads"}],
+    "attach_tags_to_campaigns": [{"method": "POST", "path": "/api/tags/attach-to-campaigns"}],
+    "remove_tags_from_campaigns": [{"method": "POST", "path": "/api/tags/remove-from-campaigns"}],
+    "attach_tags_to_sender_emails": [{"method": "POST", "path": "/api/tags/attach-to-sender-emails"}],
+    "remove_tags_from_sender_emails": [{"method": "POST", "path": "/api/tags/remove-from-sender-emails"}],
+    "list_custom_variables": [{"method": "GET", "path": _EP_CUSTOM_VARIABLES}],
+    "create_custom_variable": [{"method": "POST", "path": _EP_CUSTOM_VARIABLES}],
+    "list_blacklisted_emails": [{"method": "GET", "path": _EP_BLACKLISTED_EMAILS}],
+    "create_blacklisted_email": [{"method": "POST", "path": _EP_BLACKLISTED_EMAILS}],
+    "bulk_create_blacklisted_emails": [{"method": "POST", "path": "/api/blacklisted-emails/bulk"}],
+    "delete_blacklisted_email": [{"method": "DELETE", "path": "/api/blacklisted-emails/{blacklisted_email_id}"}],
+    "list_blacklisted_domains": [{"method": "GET", "path": _EP_BLACKLISTED_DOMAINS}],
+    "create_blacklisted_domain": [{"method": "POST", "path": _EP_BLACKLISTED_DOMAINS}],
+    "bulk_create_blacklisted_domains": [{"method": "POST", "path": "/api/blacklisted-domains/bulk"}],
+    "delete_blacklisted_domain": [{"method": "DELETE", "path": "/api/blacklisted-domains/{blacklisted_domain_id}"}],
     "delete_webhook": [{"method": "DELETE", "path": "/api/webhook-url/{id}"}],
 }
