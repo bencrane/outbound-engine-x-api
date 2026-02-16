@@ -9,3 +9,5 @@ build/
 .modal/
 .pytest_cache/
 .ruff_cache/
+archive/
+new-agent-response.md
