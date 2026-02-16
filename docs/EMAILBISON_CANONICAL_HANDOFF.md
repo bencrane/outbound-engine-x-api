@@ -1,6 +1,6 @@
 # EmailBison Canonical Handoff
 
-Generated: `2026-02-16T06:00:00Z` (UTC)
+Generated: `2026-02-16T07:00:00Z` (UTC)
 
 ## Canonical Source + Naming Caveat
 
@@ -297,6 +297,13 @@ Current rollout progress:
 - Slice 5 (Tags + variables + blocklists): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 - Slice 6 (Workspaces + settings + analytics/stats): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 - Slice 7 (Webhook management surface only): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py` for CRUD/test/sample/event-types; inbound signature verification intentionally remains gated.
+- Slice 8 (Export + analytics + bulk parity): implemented with discoverable bulk/export-adjacent operations in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, with auth-boundary/malformed payload/provider error-shape tests.
+
+Rollout readiness status:
+- Full EmailBison API rollout is complete for all discoverable management/read/write/bulk surfaces in live `user-emailbison` spec output.
+- Remaining gated/contract-limited items:
+  - Inbound webhook signature verification is blocked on `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16`.
+  - Registry contract gaps remain: `custom_variables.update`, `custom_variables.delete`, `tags.update` as `blocked_contract_missing`.
 
 ### Phase 1 - Provider foundation + read paths
 

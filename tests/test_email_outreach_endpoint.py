@@ -408,3 +408,101 @@ def test_webhook_management_provider_error_shape_contracts(monkeypatch):
     assert terminal_detail["retryable"] is False
 
     _clear()
+
+
+def test_bulk_parity_happy_paths(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+    monkeypatch.setattr(email_outreach_router, "emailbison_bulk_delete_campaigns", lambda **kwargs: {"success": True})
+    monkeypatch.setattr(email_outreach_router, "emailbison_bulk_update_sender_email_signatures", lambda **kwargs: {"success": True})
+    monkeypatch.setattr(email_outreach_router, "emailbison_bulk_update_sender_email_daily_limits", lambda **kwargs: {"success": True})
+    monkeypatch.setattr(email_outreach_router, "emailbison_bulk_create_sender_emails", lambda **kwargs: [{"id": 1}])
+    monkeypatch.setattr(email_outreach_router, "emailbison_bulk_create_leads_csv", lambda **kwargs: [{"id": 10}])
+    monkeypatch.setattr(email_outreach_router, "emailbison_bulk_update_lead_status", lambda **kwargs: {"success": True})
+    monkeypatch.setattr(email_outreach_router, "emailbison_bulk_delete_leads", lambda **kwargs: {"success": True})
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+    client = TestClient(app)
+
+    assert client.request("DELETE", "/api/email-outreach/campaigns/bulk", json={"campaign_ids": ["cmp-1"]}).status_code == 200
+    assert client.patch(
+        "/api/email-outreach/inboxes/bulk/signatures",
+        json={"inbox_ids": ["inbox-1"], "email_signature": "<p>Sig</p>"},
+    ).status_code == 200
+    assert client.patch(
+        "/api/email-outreach/inboxes/bulk/daily-limits",
+        json={"inbox_ids": ["inbox-1"], "daily_limit": 20},
+    ).status_code == 200
+    assert client.post("/api/email-outreach/inboxes/bulk/create", json={"payload": {"rows": []}}).status_code == 200
+    assert client.post("/api/email-outreach/leads/bulk/csv", json={"payload": {"csv": "email\nx@example.com"}}).status_code == 200
+    assert client.patch(
+        "/api/email-outreach/leads/bulk/status",
+        json={"campaign_id": "cmp-1", "lead_ids": ["lead-1"], "status": "verified"},
+    ).status_code == 200
+    assert client.request(
+        "DELETE",
+        "/api/email-outreach/leads/bulk",
+        json={"campaign_id": "cmp-1", "lead_ids": ["lead-1"]},
+    ).status_code == 200
+
+    _clear()
+
+
+def test_bulk_parity_auth_boundary(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"][0]["company_id"] = "c-2"
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+    client = TestClient(app)
+
+    denied = client.request("DELETE", "/api/email-outreach/campaigns/bulk", json={"campaign_ids": ["cmp-1"]})
+    assert denied.status_code == 404
+
+    _clear()
+
+
+def test_bulk_parity_malformed_identifier_tolerance(monkeypatch):
+    tables = _base_tables()
+    tables["company_campaigns"][0]["external_campaign_id"] = "bad-campaign-id"
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+    client = TestClient(app)
+
+    bad = client.request("DELETE", "/api/email-outreach/campaigns/bulk", json={"campaign_ids": ["cmp-1"]})
+    assert bad.status_code == 400
+    assert "non-numeric external identifier" in bad.json()["detail"].lower()
+
+    _clear()
+
+
+def test_bulk_parity_provider_error_shape_contracts(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+
+    def _raise_transient(**kwargs):
+        raise email_outreach_router.EmailBisonProviderError("EmailBison API returned HTTP 503: upstream unavailable")
+
+    def _raise_terminal(**kwargs):
+        raise email_outreach_router.EmailBisonProviderError("Invalid EmailBison API key")
+
+    monkeypatch.setattr(email_outreach_router, "emailbison_bulk_delete_campaigns", _raise_transient)
+    monkeypatch.setattr(email_outreach_router, "emailbison_bulk_create_sender_emails", _raise_terminal)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+    client = TestClient(app)
+
+    transient = client.request("DELETE", "/api/email-outreach/campaigns/bulk", json={"campaign_ids": ["cmp-1"]})
+    assert transient.status_code == 503
+    transient_detail = transient.json()["detail"]
+    assert transient_detail["type"] == "provider_error"
+    assert transient_detail["provider"] == "emailbison"
+    assert transient_detail["retryable"] is True
+
+    terminal = client.post("/api/email-outreach/inboxes/bulk/create", json={"payload": {"rows": []}})
+    assert terminal.status_code == 502
+    terminal_detail = terminal.json()["detail"]
+    assert terminal_detail["type"] == "provider_error"
+    assert terminal_detail["provider"] == "emailbison"
+    assert terminal_detail["retryable"] is False
+
+    _clear()

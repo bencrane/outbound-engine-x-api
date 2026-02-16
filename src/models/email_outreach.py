@@ -84,3 +84,36 @@ class EmailOutreachWebhookSamplePayloadRequest(BaseModel):
 class EmailOutreachWebhookTestEventRequest(BaseModel):
     event_type: str
     url: str
+
+
+class EmailOutreachBulkCampaignDeleteRequest(BaseModel):
+    campaign_ids: list[str]
+
+
+class EmailOutreachBulkLeadStatusUpdateRequest(BaseModel):
+    campaign_id: str
+    lead_ids: list[str]
+    status: str
+
+
+class EmailOutreachBulkLeadDeleteRequest(BaseModel):
+    campaign_id: str
+    lead_ids: list[str]
+
+
+class EmailOutreachBulkInboxSignatureUpdateRequest(BaseModel):
+    inbox_ids: list[str]
+    email_signature: str
+
+
+class EmailOutreachBulkInboxDailyLimitUpdateRequest(BaseModel):
+    inbox_ids: list[str]
+    daily_limit: int
+
+
+class EmailOutreachBulkLeadsCsvCreateRequest(BaseModel):
+    payload: dict
+
+
+class EmailOutreachBulkInboxesCreateRequest(BaseModel):
+    payload: dict

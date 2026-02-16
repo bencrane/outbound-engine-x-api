@@ -12,6 +12,13 @@ from src.models.email_outreach import (
     EmailOutreachBlocklistDomainsBulkCreateRequest,
     EmailOutreachBlocklistEmailCreateRequest,
     EmailOutreachBlocklistEmailsBulkCreateRequest,
+    EmailOutreachBulkCampaignDeleteRequest,
+    EmailOutreachBulkInboxDailyLimitUpdateRequest,
+    EmailOutreachBulkInboxesCreateRequest,
+    EmailOutreachBulkInboxSignatureUpdateRequest,
+    EmailOutreachBulkLeadDeleteRequest,
+    EmailOutreachBulkLeadStatusUpdateRequest,
+    EmailOutreachBulkLeadsCsvCreateRequest,
     EmailOutreachCampaignEventsStatsRequest,
     EmailOutreachCustomVariableCreateRequest,
     EmailOutreachTagAttachCampaignsRequest,
@@ -30,6 +37,13 @@ from src.providers.emailbison.client import (
     attach_tags_to_campaigns as emailbison_attach_tags_to_campaigns,
     attach_tags_to_leads as emailbison_attach_tags_to_leads,
     attach_tags_to_sender_emails as emailbison_attach_tags_to_sender_emails,
+    bulk_create_leads_csv as emailbison_bulk_create_leads_csv,
+    bulk_create_sender_emails as emailbison_bulk_create_sender_emails,
+    bulk_delete_campaigns as emailbison_bulk_delete_campaigns,
+    bulk_delete_leads as emailbison_bulk_delete_leads,
+    bulk_update_lead_status as emailbison_bulk_update_lead_status,
+    bulk_update_sender_email_daily_limits as emailbison_bulk_update_sender_email_daily_limits,
+    bulk_update_sender_email_signatures as emailbison_bulk_update_sender_email_signatures,
     bulk_create_blacklisted_domains as emailbison_bulk_create_blacklisted_domains,
     bulk_create_blacklisted_emails as emailbison_bulk_create_blacklisted_emails,
     create_blacklisted_domain as emailbison_create_blacklisted_domain,
@@ -157,6 +171,13 @@ def _get_inboxes_for_auth(auth: AuthContext, inbox_ids: list[str]) -> list[dict[
     return inboxes
 
 
+def _get_campaigns_for_auth(auth: AuthContext, campaign_ids: list[str]) -> list[dict[str, Any]]:
+    campaigns: list[dict[str, Any]] = []
+    for campaign_id in campaign_ids:
+        campaigns.append(_get_campaign_for_auth(auth, campaign_id))
+    return campaigns
+
+
 @router.get("/webhooks")
 async def list_webhooks(auth: AuthContext = Depends(get_current_auth)):
     creds = _get_org_provider_config(auth.org_id, "emailbison")
@@ -280,6 +301,145 @@ async def send_test_webhook_event(
         )
     except EmailBisonProviderError as exc:
         _raise_provider_http_error("webhooks_test_event_send", exc)
+    return {"provider": "email_outreach", "result": result}
+
+
+@router.delete("/campaigns/bulk")
+async def bulk_delete_campaigns(
+    data: EmailOutreachBulkCampaignDeleteRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaigns = _get_campaigns_for_auth(auth, data.campaign_ids)
+    _ = [_require_emailbison_provider(campaign["provider_id"], "Campaign bulk delete") for campaign in campaigns]
+    external_campaign_ids = [_to_int(campaign["external_campaign_id"], context="Campaign bulk delete") for campaign in campaigns]
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        result = emailbison_bulk_delete_campaigns(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            campaign_ids=external_campaign_ids,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("campaigns_bulk_delete", exc)
+    return {"provider": "email_outreach", "result": result}
+
+
+@router.patch("/inboxes/bulk/signatures")
+async def bulk_update_inbox_signatures(
+    data: EmailOutreachBulkInboxSignatureUpdateRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    inboxes = _get_inboxes_for_auth(auth, data.inbox_ids)
+    _ = [_require_emailbison_provider(inbox["provider_id"], "Inbox signatures bulk update") for inbox in inboxes]
+    sender_email_ids = [_to_int(inbox["external_account_id"], context="Inbox signatures bulk update") for inbox in inboxes]
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        result = emailbison_bulk_update_sender_email_signatures(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            sender_email_ids=sender_email_ids,
+            email_signature=data.email_signature,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("inboxes_bulk_signatures_update", exc)
+    return {"provider": "email_outreach", "result": result}
+
+
+@router.patch("/inboxes/bulk/daily-limits")
+async def bulk_update_inbox_daily_limits(
+    data: EmailOutreachBulkInboxDailyLimitUpdateRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    inboxes = _get_inboxes_for_auth(auth, data.inbox_ids)
+    _ = [_require_emailbison_provider(inbox["provider_id"], "Inbox daily-limits bulk update") for inbox in inboxes]
+    sender_email_ids = [_to_int(inbox["external_account_id"], context="Inbox daily-limits bulk update") for inbox in inboxes]
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        result = emailbison_bulk_update_sender_email_daily_limits(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            sender_email_ids=sender_email_ids,
+            daily_limit=data.daily_limit,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("inboxes_bulk_daily_limits_update", exc)
+    return {"provider": "email_outreach", "result": result}
+
+
+@router.post("/inboxes/bulk/create")
+async def bulk_create_inboxes(
+    data: EmailOutreachBulkInboxesCreateRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        rows = emailbison_bulk_create_sender_emails(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            payload=data.payload,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("inboxes_bulk_create", exc)
+    return {"provider": "email_outreach", "rows": rows}
+
+
+@router.post("/leads/bulk/csv")
+async def bulk_create_leads_csv(
+    data: EmailOutreachBulkLeadsCsvCreateRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        rows = emailbison_bulk_create_leads_csv(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            payload=data.payload,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("leads_bulk_csv_create", exc)
+    return {"provider": "email_outreach", "rows": rows}
+
+
+@router.patch("/leads/bulk/status")
+async def bulk_update_lead_status(
+    data: EmailOutreachBulkLeadStatusUpdateRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, data.campaign_id)
+    _require_emailbison_provider(campaign["provider_id"], "Lead status bulk update")
+    leads = [_get_campaign_lead_for_auth(auth, data.campaign_id, lead_id) for lead_id in data.lead_ids]
+    external_lead_ids = [_to_int(lead["external_lead_id"], context="Lead status bulk update") for lead in leads]
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        result = emailbison_bulk_update_lead_status(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            lead_ids=external_lead_ids,
+            status=data.status,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("leads_bulk_status_update", exc)
+    return {"provider": "email_outreach", "result": result}
+
+
+@router.delete("/leads/bulk")
+async def bulk_delete_leads(
+    data: EmailOutreachBulkLeadDeleteRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, data.campaign_id)
+    _require_emailbison_provider(campaign["provider_id"], "Lead bulk delete")
+    leads = [_get_campaign_lead_for_auth(auth, data.campaign_id, lead_id) for lead_id in data.lead_ids]
+    external_lead_ids = [_to_int(lead["external_lead_id"], context="Lead bulk delete") for lead in leads]
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        result = emailbison_bulk_delete_leads(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            lead_ids=external_lead_ids,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("leads_bulk_delete", exc)
     return {"provider": "email_outreach", "result": result}
 
 

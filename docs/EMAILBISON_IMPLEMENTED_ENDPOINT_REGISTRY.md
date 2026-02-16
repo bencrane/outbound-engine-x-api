@@ -112,6 +112,20 @@ Notes:
 - This slice covers management/test/sample/event-types only.
 - Inbound webhook signature verification remains blocked on `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16`.
 
+## Slice 8 Coverage (Export + Analytics + Bulk Parity)
+
+- `DELETE /api/campaigns/bulk` -> `bulk_delete_campaigns()`
+- `PATCH /api/sender-emails/signatures/bulk` -> `bulk_update_sender_email_signatures()`
+- `PATCH /api/sender-emails/daily-limits/bulk` -> `bulk_update_sender_email_daily_limits()`
+- `POST /api/sender-emails/bulk` -> `bulk_create_sender_emails()`
+- `POST /api/leads/bulk/csv` -> `bulk_create_leads_csv()`
+- `PATCH /api/leads/bulk-update-status` -> `bulk_update_lead_status()`
+- `DELETE /api/leads/bulk` -> `bulk_delete_leads()`
+
+Notes:
+- These endpoints complete the discoverable bulk/export-adjacent parity from current live API spec output.
+- Existing stats/analytics endpoints from Slice 6 remain canonical (`/api/workspaces/v1.1/stats`, `/api/campaign-events/stats`).
+
 ## Contract-Limited Gaps (Registry Status)
 
 Source of truth in code: `src/providers/emailbison/client.py` -> `EMAILBISON_CONTRACT_STATUS_REGISTRY`

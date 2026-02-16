@@ -616,6 +616,70 @@ def test_webhook_management_endpoints(monkeypatch):
     )
 
 
+def test_bulk_parity_endpoints(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        if kwargs["url"].endswith("/api/sender-emails/bulk"):
+            return _FakeResponse(201, {"data": [{"id": 1}]})
+        if kwargs["url"].endswith("/api/leads/bulk/csv"):
+            return _FakeResponse(201, {"data": [{"id": 10}]})
+        return _FakeResponse(200, {"data": {"success": True}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    emailbison_client.bulk_delete_campaigns(api_key="k", campaign_ids=[1, 2], instance_url="https://x.example")
+    emailbison_client.bulk_update_sender_email_signatures(
+        api_key="k",
+        sender_email_ids=[11, 12],
+        email_signature="<p>Sig</p>",
+        instance_url="https://x.example",
+    )
+    emailbison_client.bulk_update_sender_email_daily_limits(
+        api_key="k",
+        sender_email_ids=[11, 12],
+        daily_limit=25,
+        instance_url="https://x.example",
+    )
+    emailbison_client.bulk_create_sender_emails(
+        api_key="k",
+        payload={"rows": []},
+        instance_url="https://x.example",
+    )
+    emailbison_client.bulk_create_leads_csv(
+        api_key="k",
+        payload={"csv": "email\nx@example.com"},
+        instance_url="https://x.example",
+    )
+    emailbison_client.bulk_update_lead_status(
+        api_key="k",
+        lead_ids=[31, 32],
+        status="verified",
+        instance_url="https://x.example",
+    )
+    emailbison_client.bulk_delete_leads(
+        api_key="k",
+        lead_ids=[31, 32],
+        instance_url="https://x.example",
+    )
+
+    assert calls[0] == ("DELETE", "https://x.example/api/campaigns/bulk", {"campaign_ids": [1, 2]})
+    assert calls[1] == (
+        "PATCH",
+        "https://x.example/api/sender-emails/signatures/bulk",
+        {"sender_email_ids": [11, 12], "email_signature": "<p>Sig</p>"},
+    )
+    assert calls[2] == (
+        "PATCH",
+        "https://x.example/api/sender-emails/daily-limits/bulk",
+        {"sender_email_ids": [11, 12], "daily_limit": 25},
+    )
+    assert calls[3] == ("POST", "https://x.example/api/sender-emails/bulk", {"rows": []})
+    assert calls[4] == ("POST", "https://x.example/api/leads/bulk/csv", {"csv": "email\nx@example.com"})
+    assert calls[5] == ("PATCH", "https://x.example/api/leads/bulk-update-status", {"lead_ids": [31, 32], "status": "verified"})
+    assert calls[6] == ("DELETE", "https://x.example/api/leads/bulk", {"lead_ids": [31, 32]})
+
+
 def test_registry_covers_all_public_client_methods():
     excluded = {"webhook_resource_paths"}
     public_callables = {

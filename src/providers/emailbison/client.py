@@ -1516,6 +1516,146 @@ def get_campaign_events_stats(
     raise EmailBisonProviderError("Unexpected EmailBison campaign events stats response shape")
 
 
+def bulk_delete_campaigns(
+    api_key: str,
+    campaign_ids: list[int],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        candidate_paths=["/api/campaigns/bulk"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"campaign_ids": campaign_ids},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison bulk delete campaigns response type")
+
+
+def bulk_update_sender_email_signatures(
+    api_key: str,
+    sender_email_ids: list[int],
+    email_signature: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=["/api/sender-emails/signatures/bulk"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"sender_email_ids": sender_email_ids, "email_signature": email_signature},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison bulk sender signature update response type")
+
+
+def bulk_update_sender_email_daily_limits(
+    api_key: str,
+    sender_email_ids: list[int],
+    daily_limit: int,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=["/api/sender-emails/daily-limits/bulk"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"sender_email_ids": sender_email_ids, "daily_limit": daily_limit},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison bulk sender daily limit update response type")
+
+
+def bulk_create_sender_emails(
+    api_key: str,
+    payload: dict[str, Any],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=["/api/sender-emails/bulk"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison bulk create sender emails response shape")
+
+
+def bulk_create_leads_csv(
+    api_key: str,
+    payload: dict[str, Any],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=["/api/leads/bulk/csv"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison bulk create leads csv response shape")
+
+
+def bulk_update_lead_status(
+    api_key: str,
+    lead_ids: list[int],
+    status: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=["/api/leads/bulk-update-status"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"lead_ids": lead_ids, "status": status},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison bulk update lead status response type")
+
+
+def bulk_delete_leads(
+    api_key: str,
+    lead_ids: list[int],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        candidate_paths=["/api/leads/bulk"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"lead_ids": lead_ids},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison bulk delete leads response type")
+
+
 def webhook_resource_paths(webhook_id: int | str) -> dict[str, str]:
     """
     Build known webhook resource path variants from current spec outputs.
@@ -1842,6 +1982,13 @@ EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     "get_workspace_master_inbox_settings": [{"method": "GET", "path": _EP_MASTER_INBOX_SETTINGS}],
     "update_workspace_master_inbox_settings": [{"method": "PATCH", "path": _EP_MASTER_INBOX_SETTINGS}],
     "get_campaign_events_stats": [{"method": "GET", "path": _EP_CAMPAIGN_EVENTS_STATS}],
+    "bulk_delete_campaigns": [{"method": "DELETE", "path": "/api/campaigns/bulk"}],
+    "bulk_update_sender_email_signatures": [{"method": "PATCH", "path": "/api/sender-emails/signatures/bulk"}],
+    "bulk_update_sender_email_daily_limits": [{"method": "PATCH", "path": "/api/sender-emails/daily-limits/bulk"}],
+    "bulk_create_sender_emails": [{"method": "POST", "path": "/api/sender-emails/bulk"}],
+    "bulk_create_leads_csv": [{"method": "POST", "path": "/api/leads/bulk/csv"}],
+    "bulk_update_lead_status": [{"method": "PATCH", "path": "/api/leads/bulk-update-status"}],
+    "bulk_delete_leads": [{"method": "DELETE", "path": "/api/leads/bulk"}],
     "list_webhooks": [{"method": "GET", "path": "/api/webhook-url"}],
     "create_webhook": [{"method": "POST", "path": "/api/webhook-url"}],
     "get_webhook": [{"method": "GET", "path": "/api/webhook-url/{id}"}],
