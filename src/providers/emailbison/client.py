@@ -13,6 +13,12 @@ _MAX_RETRY_ATTEMPTS = 3
 _RETRY_BASE_DELAY_SECONDS = 0.25
 _RETRY_MAX_DELAY_SECONDS = 2.0
 
+_EP_USERS = "/api/users"
+_EP_CAMPAIGNS = "/api/campaigns"
+_EP_LEADS = "/api/leads"
+_EP_REPLIES = "/api/replies"
+_EP_SENDER_EMAILS = "/api/sender-emails"
+
 
 class EmailBisonProviderError(Exception):
     """Provider-level exception for EmailBison integration failures."""
@@ -157,7 +163,7 @@ def _request_json(
 def validate_api_key(api_key: str, instance_url: str | None = None, timeout_seconds: float = 8.0) -> None:
     _request_json(
         method="GET",
-        candidate_paths=["/api/users"],
+        candidate_paths=[_EP_USERS],
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
@@ -171,7 +177,7 @@ def list_campaigns(
 ) -> list[dict[str, Any]]:
     data = _request_json(
         method="GET",
-        candidate_paths=["/api/campaigns"],
+        candidate_paths=[_EP_CAMPAIGNS],
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
@@ -192,7 +198,7 @@ def create_campaign(
 ) -> dict[str, Any]:
     data = _request_json(
         method="POST",
-        candidate_paths=["/api/campaigns"],
+        candidate_paths=[_EP_CAMPAIGNS],
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
@@ -237,15 +243,24 @@ def update_campaign_status(
 
 def list_leads(
     api_key: str,
+    search: str | None = None,
+    filters: dict[str, Any] | None = None,
     instance_url: str | None = None,
     timeout_seconds: float = 12.0,
 ) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {}
+    if search:
+        params["search"] = search
+    if filters:
+        for key, value in filters.items():
+            params[f"filters.{key}"] = value
     data = _request_json(
         method="GET",
-        candidate_paths=["/api/leads"],
+        candidate_paths=[_EP_LEADS],
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
+        params=params or None,
     )
     if isinstance(data, list):
         return data
@@ -262,7 +277,7 @@ def create_lead(
 ) -> dict[str, Any]:
     data = _request_json(
         method="POST",
-        candidate_paths=["/api/leads"],
+        candidate_paths=[_EP_LEADS],
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
@@ -271,6 +286,145 @@ def create_lead(
     if isinstance(data, dict):
         return data
     raise EmailBisonProviderError("Unexpected EmailBison create lead response type")
+
+
+def create_leads_bulk(
+    api_key: str,
+    leads: list[dict[str, Any]],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_LEADS}/multiple"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"leads": leads},
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison bulk create leads response shape")
+
+
+def create_or_update_leads_bulk(
+    api_key: str,
+    leads: list[dict[str, Any]],
+    existing_lead_behavior: str = "patch",
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    payload = {"leads": leads, "existing_lead_behavior": existing_lead_behavior}
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"{_EP_LEADS}/create-or-update/multiple"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison bulk upsert leads response shape")
+
+
+def get_lead(
+    api_key: str,
+    lead_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=[f"{_EP_LEADS}/{lead_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison get lead response type")
+
+
+def update_lead(
+    api_key: str,
+    lead_id: int | str,
+    lead: dict[str, Any],
+    replace_all: bool = False,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PUT" if replace_all else "PATCH",
+        candidate_paths=[f"{_EP_LEADS}/{lead_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=lead,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison update lead response type")
+
+
+def update_lead_status(
+    api_key: str,
+    lead_id: int | str,
+    status_value: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=[f"{_EP_LEADS}/{lead_id}/update-status"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"status": status_value},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison update lead status response type")
+
+
+def unsubscribe_lead(
+    api_key: str,
+    lead_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        candidate_paths=[f"{_EP_LEADS}/{lead_id}/unsubscribe"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison unsubscribe lead response type")
+
+
+def delete_lead(
+    api_key: str,
+    lead_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        candidate_paths=[f"{_EP_LEADS}/{lead_id}"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison delete lead response type")
 
 
 def list_campaign_leads(
@@ -317,6 +471,30 @@ def attach_leads_to_campaign(
     raise EmailBisonProviderError("Unexpected EmailBison attach-leads response type")
 
 
+def attach_lead_list_to_campaign(
+    api_key: str,
+    campaign_id: int | str,
+    lead_list_id: int,
+    allow_parallel_sending: bool = False,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/leads/attach-lead-list"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={
+            "lead_list_id": lead_list_id,
+            "allow_parallel_sending": allow_parallel_sending,
+        },
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison attach-lead-list response type")
+
+
 def stop_future_emails_for_leads(
     api_key: str,
     campaign_id: int | str,
@@ -337,6 +515,26 @@ def stop_future_emails_for_leads(
     raise EmailBisonProviderError("Unexpected EmailBison stop-future-emails response type")
 
 
+def remove_leads_from_campaign(
+    api_key: str,
+    campaign_id: int | str,
+    lead_ids: list[int],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        candidate_paths=[f"/api/campaigns/{campaign_id}/leads"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"lead_ids": lead_ids},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison remove-leads response type")
+
+
 def list_replies(
     api_key: str,
     campaign_id: int | str | None = None,
@@ -348,7 +546,7 @@ def list_replies(
         params = {"campaign_id": campaign_id}
     data = _request_json(
         method="GET",
-        candidate_paths=["/api/replies"],
+        candidate_paths=[_EP_REPLIES],
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
@@ -386,7 +584,7 @@ def list_sender_emails(
 ) -> list[dict[str, Any]]:
     data = _request_json(
         method="GET",
-        candidate_paths=["/api/sender-emails"],
+        candidate_paths=[_EP_SENDER_EMAILS],
         api_key=api_key,
         instance_url=instance_url,
         timeout_seconds=timeout_seconds,
@@ -432,3 +630,33 @@ def delete_webhook(
     if isinstance(data, dict):
         return data
     raise EmailBisonProviderError("Unexpected EmailBison webhook delete response type")
+
+
+EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
+    "validate_api_key": [{"method": "GET", "path": _EP_USERS}],
+    "list_campaigns": [{"method": "GET", "path": _EP_CAMPAIGNS}],
+    "create_campaign": [{"method": "POST", "path": _EP_CAMPAIGNS}],
+    "update_campaign_status": [
+        {"method": "PATCH", "path": "/api/campaigns/{campaign_id}/resume"},
+        {"method": "PATCH", "path": "/api/campaigns/{campaign_id}/pause"},
+        {"method": "PATCH", "path": "/api/campaigns/{campaign_id}/archive"},
+    ],
+    "list_leads": [{"method": "GET", "path": _EP_LEADS}],
+    "create_lead": [{"method": "POST", "path": _EP_LEADS}],
+    "create_leads_bulk": [{"method": "POST", "path": "/api/leads/multiple"}],
+    "create_or_update_leads_bulk": [{"method": "POST", "path": "/api/leads/create-or-update/multiple"}],
+    "get_lead": [{"method": "GET", "path": "/api/leads/{lead_id}"}],
+    "update_lead": [{"method": "PATCH|PUT", "path": "/api/leads/{lead_id}"}],
+    "update_lead_status": [{"method": "PATCH", "path": "/api/leads/{lead_id}/update-status"}],
+    "unsubscribe_lead": [{"method": "PATCH", "path": "/api/leads/{lead_id}/unsubscribe"}],
+    "delete_lead": [{"method": "DELETE", "path": "/api/leads/{lead_id}"}],
+    "list_campaign_leads": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/leads"}],
+    "attach_leads_to_campaign": [{"method": "POST", "path": "/api/campaigns/{campaign_id}/leads/attach-leads"}],
+    "attach_lead_list_to_campaign": [{"method": "POST", "path": "/api/campaigns/{campaign_id}/leads/attach-lead-list"}],
+    "stop_future_emails_for_leads": [{"method": "POST", "path": "/api/campaigns/{campaign_id}/leads/stop-future-emails"}],
+    "remove_leads_from_campaign": [{"method": "DELETE", "path": "/api/campaigns/{campaign_id}/leads"}],
+    "list_replies": [{"method": "GET", "path": _EP_REPLIES}],
+    "get_campaign_stats": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/stats"}],
+    "list_sender_emails": [{"method": "GET", "path": _EP_SENDER_EMAILS}],
+    "delete_webhook": [{"method": "DELETE", "path": "/api/webhook-url/{id}"}],
+}

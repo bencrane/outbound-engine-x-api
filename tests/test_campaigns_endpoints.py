@@ -447,6 +447,73 @@ def test_add_campaign_leads_emailbison(monkeypatch):
     _clear()
 
 
+def test_add_campaign_leads_emailbison_bulk_create_for_multiple_leads(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "321",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    tables["company_campaign_leads"] = []
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+
+    called = {"bulk": 0, "single": 0}
+
+    def _bulk_create(**kwargs):
+        called["bulk"] += 1
+        return [
+            {"id": 9001, "email": "lead1@example.com", "first_name": "Lead1", "status": "verified"},
+            {"id": 9002, "email": "lead2@example.com", "first_name": "Lead2", "status": "verified"},
+        ]
+
+    def _single_create(**kwargs):
+        called["single"] += 1
+        return {"id": 9999}
+
+    monkeypatch.setattr(campaigns_router, "emailbison_create_leads_bulk", _bulk_create)
+    monkeypatch.setattr(campaigns_router, "emailbison_create_lead", _single_create)
+    monkeypatch.setattr(campaigns_router, "emailbison_attach_leads_to_campaign", lambda **kwargs: {"success": True})
+    monkeypatch.setattr(
+        campaigns_router,
+        "emailbison_list_campaign_leads",
+        lambda **kwargs: [
+            {"id": 9001, "email": "lead1@example.com", "first_name": "Lead1", "status": "verified"},
+            {"id": 9002, "email": "lead2@example.com", "first_name": "Lead2", "status": "verified"},
+        ],
+    )
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    add_response = client.post(
+        "/api/campaigns/cmp-1/leads",
+        json={
+            "leads": [
+                {"email": "lead1@example.com", "first_name": "Lead1"},
+                {"email": "lead2@example.com", "first_name": "Lead2"},
+            ]
+        },
+    )
+    assert add_response.status_code == 200
+    assert add_response.json()["affected"] == 2
+    assert called["bulk"] == 1
+    assert called["single"] == 0
+
+    _clear()
+
+
 def test_add_campaign_leads_emailbison_skips_malformed_provider_payload(monkeypatch):
     tables = _base_tables()
     tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
@@ -589,6 +656,65 @@ def test_emailbison_resume_lead_not_supported(monkeypatch):
     response = client.post("/api/campaigns/cmp-1/leads/lead-local-1/resume")
     assert response.status_code == 409
     assert "not supported" in response.json()["detail"].lower()
+
+    _clear()
+
+
+def test_emailbison_unsubscribe_lead_calls_global_unsubscribe(monkeypatch):
+    tables = _base_tables()
+    tables["providers"].append({"id": "prov-emailbison", "slug": "emailbison", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-emailbison",
+            "external_campaign_id": "321",
+            "name": "Campaign",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["company_campaign_leads"] = [
+        {
+            "id": "lead-local-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "company_campaign_id": "cmp-1",
+            "provider_id": "prov-emailbison",
+            "external_lead_id": "9001",
+            "email": "lead@example.com",
+            "status": "active",
+            "updated_at": _ts(),
+            "deleted_at": None,
+        }
+    ]
+    tables["organizations"][0]["provider_configs"]["emailbison"] = {"api_key": "eb-key", "instance_url": "https://eb.example"}
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(campaigns_router, "supabase", fake_db)
+
+    called = {"stop": 0, "unsubscribe": 0}
+
+    def _stop(**kwargs):
+        called["stop"] += 1
+        return {"success": True}
+
+    def _unsubscribe(**kwargs):
+        called["unsubscribe"] += 1
+        return {"id": 9001, "status": "unsubscribed"}
+
+    monkeypatch.setattr(campaigns_router, "emailbison_stop_future_emails_for_leads", _stop)
+    monkeypatch.setattr(campaigns_router, "emailbison_unsubscribe_lead", _unsubscribe)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.post("/api/campaigns/cmp-1/leads/lead-local-1/unsubscribe")
+    assert response.status_code == 200
+    assert response.json()["status"] == "unsubscribed"
+    assert called == {"stop": 1, "unsubscribe": 1}
 
     _clear()
 

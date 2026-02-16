@@ -49,6 +49,7 @@ from src.providers.smartlead.client import (
 )
 from src.providers.emailbison.client import (
     attach_leads_to_campaign as emailbison_attach_leads_to_campaign,
+    create_leads_bulk as emailbison_create_leads_bulk,
     create_lead as emailbison_create_lead,
     EmailBisonProviderError,
     create_campaign as emailbison_create_campaign,
@@ -56,6 +57,7 @@ from src.providers.emailbison.client import (
     list_campaign_leads as emailbison_list_campaign_leads,
     list_replies as emailbison_list_replies,
     stop_future_emails_for_leads as emailbison_stop_future_emails_for_leads,
+    unsubscribe_lead as emailbison_unsubscribe_lead,
     update_campaign_status as emailbison_update_campaign_status,
 )
 
@@ -683,12 +685,24 @@ async def add_campaign_leads(
             )
         elif provider_slug == "emailbison":
             created_lead_ids: list[int] = []
-            for lead_payload in leads_payload:
-                created = emailbison_create_lead(
+            if len(leads_payload) > 1:
+                created_batch = emailbison_create_leads_bulk(
                     api_key=provider_credentials["api_key"],
                     instance_url=provider_credentials.get("instance_url"),
-                    lead=lead_payload,
+                    leads=leads_payload,
                 )
+                created_records = created_batch
+            else:
+                created_records = [
+                    emailbison_create_lead(
+                        api_key=provider_credentials["api_key"],
+                        instance_url=provider_credentials.get("instance_url"),
+                        lead=lead_payload,
+                    )
+                    for lead_payload in leads_payload
+                ]
+
+            for created in created_records:
                 lead_id = created.get("id")
                 if lead_id is None:
                     raise HTTPException(
@@ -784,11 +798,17 @@ async def pause_campaign_lead(
                 lead_id=lead["external_lead_id"],
             )
         elif provider_slug == "emailbison":
+            external_lead_id = int(lead["external_lead_id"])
             emailbison_stop_future_emails_for_leads(
                 api_key=provider_credentials["api_key"],
                 instance_url=provider_credentials.get("instance_url"),
                 campaign_id=campaign["external_campaign_id"],
-                lead_ids=[int(lead["external_lead_id"])],
+                lead_ids=[external_lead_id],
+            )
+            emailbison_unsubscribe_lead(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                lead_id=external_lead_id,
             )
         else:
             raise HTTPException(
@@ -865,11 +885,17 @@ async def unsubscribe_campaign_lead(
                 lead_id=lead["external_lead_id"],
             )
         elif provider_slug == "emailbison":
+            external_lead_id = int(lead["external_lead_id"])
             emailbison_stop_future_emails_for_leads(
                 api_key=provider_credentials["api_key"],
                 instance_url=provider_credentials.get("instance_url"),
                 campaign_id=campaign["external_campaign_id"],
-                lead_ids=[int(lead["external_lead_id"])],
+                lead_ids=[external_lead_id],
+            )
+            emailbison_unsubscribe_lead(
+                api_key=provider_credentials["api_key"],
+                instance_url=provider_credentials.get("instance_url"),
+                lead_id=external_lead_id,
             )
         else:
             raise HTTPException(

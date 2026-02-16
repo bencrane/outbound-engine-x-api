@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import types
+
 from src.providers.emailbison import client as emailbison_client
 
 
@@ -114,3 +116,77 @@ def test_campaign_status_update_rejects_unsupported_transition():
         assert "Unsupported EmailBison campaign status transition requested" in str(exc)
     else:
         raise AssertionError("Expected EmailBisonProviderError for unsupported status")
+
+
+def test_create_leads_bulk_uses_multiple_endpoint(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        return _FakeResponse(201, {"data": [{"id": 1, "email": "a@example.com"}]})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    result = emailbison_client.create_leads_bulk(
+        api_key="k",
+        leads=[{"first_name": "A", "last_name": "One", "email": "a@example.com"}],
+        instance_url="https://x.example",
+    )
+
+    assert result == [{"id": 1, "email": "a@example.com"}]
+    assert calls == [
+        (
+            "POST",
+            "https://x.example/api/leads/multiple",
+            {"leads": [{"first_name": "A", "last_name": "One", "email": "a@example.com"}]},
+        )
+    ]
+
+
+def test_unsubscribe_lead_uses_unsubscribe_endpoint(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"]))
+        return _FakeResponse(200, {"data": {"id": 777, "status": "unsubscribed"}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    result = emailbison_client.unsubscribe_lead(
+        api_key="k",
+        lead_id=777,
+        instance_url="https://x.example",
+    )
+
+    assert result["status"] == "unsubscribed"
+    assert calls == [("PATCH", "https://x.example/api/leads/777/unsubscribe")]
+
+
+def test_update_lead_status_uses_status_endpoint(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        return _FakeResponse(200, {"data": {"id": 778, "status": "inactive"}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    result = emailbison_client.update_lead_status(
+        api_key="k",
+        lead_id=778,
+        status_value="inactive",
+        instance_url="https://x.example",
+    )
+
+    assert result["status"] == "inactive"
+    assert calls == [
+        ("PATCH", "https://x.example/api/leads/778/update-status", {"status": "inactive"})
+    ]
+
+
+def test_registry_covers_all_public_client_methods():
+    excluded = {"webhook_resource_paths"}
+    public_callables = {
+        name
+        for name, value in vars(emailbison_client).items()
+        if isinstance(value, types.FunctionType) and not name.startswith("_") and name not in excluded
+    }
+    registered = set(emailbison_client.EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY.keys())
+    assert public_callables == registered
