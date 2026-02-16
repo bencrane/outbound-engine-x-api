@@ -63,3 +63,24 @@ class EmailOutreachCampaignEventsStatsRequest(BaseModel):
     end_date: str
     campaign_ids: list[str] | None = None
     inbox_ids: list[str] | None = None
+
+
+class EmailOutreachWebhookCreateRequest(BaseModel):
+    name: str
+    url: str
+    events: list[str]
+
+
+class EmailOutreachWebhookUpdateRequest(BaseModel):
+    name: str
+    url: str
+    events: list[str]
+
+
+class EmailOutreachWebhookSamplePayloadRequest(BaseModel):
+    event_type: str
+
+
+class EmailOutreachWebhookTestEventRequest(BaseModel):
+    event_type: str
+    url: str

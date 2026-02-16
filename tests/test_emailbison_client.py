@@ -549,6 +549,73 @@ def test_contract_status_registry_for_blocked_contract_missing_gaps():
     assert "live user-emailbison api spec output" in registry["custom_variables.update"]["evidence"].lower()
 
 
+def test_webhook_management_endpoints(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request_with_retry(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"], kwargs.get("json_payload")))
+        if kwargs["method"] == "GET" and kwargs["url"].endswith("/api/webhook-url"):
+            return _FakeResponse(200, {"data": [{"id": 1, "name": "Hook"}]})
+        if kwargs["method"] == "GET" and kwargs["url"].endswith("/api/webhook-events/event-types"):
+            return _FakeResponse(200, {"data": [{"id": "email_sent"}]})
+        if kwargs["method"] == "GET" and kwargs["url"].endswith("/api/webhook-events/sample-payload"):
+            return _FakeResponse(200, {"data": {"event": {"type": "EMAIL_SENT"}}})
+        return _FakeResponse(200, {"data": {"id": 1, "success": True}})
+
+    monkeypatch.setattr(emailbison_client, "_request_with_retry", _fake_request_with_retry)
+    emailbison_client.list_webhooks(api_key="k", instance_url="https://x.example")
+    emailbison_client.create_webhook(
+        api_key="k",
+        name="Hook",
+        url="https://example.com/hook",
+        events=["email_sent"],
+        instance_url="https://x.example",
+    )
+    emailbison_client.get_webhook(api_key="k", webhook_id=1, instance_url="https://x.example")
+    emailbison_client.update_webhook(
+        api_key="k",
+        webhook_id=1,
+        name="Hook2",
+        url="https://example.com/hook2",
+        events=["lead_replied"],
+        instance_url="https://x.example",
+    )
+    emailbison_client.delete_webhook(api_key="k", webhook_id=1, instance_url="https://x.example")
+    emailbison_client.get_webhook_event_types(api_key="k", instance_url="https://x.example")
+    emailbison_client.get_sample_webhook_payload(
+        api_key="k",
+        event_type="email_sent",
+        instance_url="https://x.example",
+    )
+    emailbison_client.send_test_webhook_event(
+        api_key="k",
+        event_type="email_sent",
+        url="https://example.com/hook",
+        instance_url="https://x.example",
+    )
+
+    assert calls[0] == ("GET", "https://x.example/api/webhook-url", None)
+    assert calls[1] == (
+        "POST",
+        "https://x.example/api/webhook-url",
+        {"name": "Hook", "url": "https://example.com/hook", "events": ["email_sent"]},
+    )
+    assert calls[2] == ("GET", "https://x.example/api/webhook-url/1", None)
+    assert calls[3] == (
+        "PUT",
+        "https://x.example/api/webhook-url/1",
+        {"name": "Hook2", "url": "https://example.com/hook2", "events": ["lead_replied"]},
+    )
+    assert calls[4] == ("DELETE", "https://x.example/api/webhook-url/1", None)
+    assert calls[5] == ("GET", "https://x.example/api/webhook-events/event-types", None)
+    assert calls[6] == ("GET", "https://x.example/api/webhook-events/sample-payload", None)
+    assert calls[7] == (
+        "POST",
+        "https://x.example/api/webhook-events/test-event",
+        {"event_type": "email_sent", "url": "https://example.com/hook"},
+    )
+
+
 def test_registry_covers_all_public_client_methods():
     excluded = {"webhook_resource_paths"}
     public_callables = {

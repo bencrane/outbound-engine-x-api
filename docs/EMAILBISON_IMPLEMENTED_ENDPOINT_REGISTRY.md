@@ -97,6 +97,21 @@ Notes:
 - `PATCH /api/workspaces/v1.1/master-inbox-settings` -> `update_workspace_master_inbox_settings()`
 - `GET /api/campaign-events/stats` -> `get_campaign_events_stats()`
 
+## Slice 7 Coverage (Webhook Management Surface Only)
+
+- `GET /api/webhook-url` -> `list_webhooks()`
+- `POST /api/webhook-url` -> `create_webhook()`
+- `GET /api/webhook-url/{id}` -> `get_webhook()`
+- `PUT /api/webhook-url/{id}` -> `update_webhook()`
+- `DELETE /api/webhook-url/{id|webhook_url_id}` -> `delete_webhook()` (tolerant delete path mapping)
+- `GET /api/webhook-events/event-types` -> `get_webhook_event_types()`
+- `GET /api/webhook-events/sample-payload` -> `get_sample_webhook_payload()`
+- `POST /api/webhook-events/test-event` -> `send_test_webhook_event()`
+
+Notes:
+- This slice covers management/test/sample/event-types only.
+- Inbound webhook signature verification remains blocked on `SUPPORT-EMAILBISON-WEBHOOK-SIGNATURE-2026-02-16`.
+
 ## Contract-Limited Gaps (Registry Status)
 
 Source of truth in code: `src/providers/emailbison/client.py` -> `EMAILBISON_CONTRACT_STATUS_REGISTRY`

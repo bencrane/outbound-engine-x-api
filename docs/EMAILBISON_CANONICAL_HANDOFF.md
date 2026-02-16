@@ -1,6 +1,6 @@
 # EmailBison Canonical Handoff
 
-Generated: `2026-02-16T05:00:00Z` (UTC)
+Generated: `2026-02-16T06:00:00Z` (UTC)
 
 ## Canonical Source + Naming Caveat
 
@@ -167,6 +167,9 @@ Confidence rubric:
   - `/api/webhook-url` (collection)
   - `/api/webhook-url/{id}` (single resource read/update)
   - `/api/webhook-url/{webhook_url_id}` (single resource delete)
+  - `/api/webhook-events/event-types` (supported event catalog)
+  - `/api/webhook-events/sample-payload` (sample payload by event type)
+  - `/api/webhook-events/test-event` (provider-triggered test send)
 - **Aliases / deprecated / non-canonical notes**
   - `/api/webhooks` is **not** present in live API spec output.
   - `{id}` and `{webhook_url_id}` appear as path parameter variants for single-resource operations; treat `{id}` as canonical for read/update and `{webhook_url_id}` as spec-exposed delete variant.
@@ -184,6 +187,7 @@ Confidence rubric:
     - `canonical payload rules`: **not documented** in `user-emailbison` resources/spec.
     - `timestamp/replay expectations`: **not documented** in `user-emailbison` resources/spec.
   - Verification evidence: direct live checks of `/api/webhook-url`, `/api/webhook-events/sample-payload`, `/api/webhook-events/test-event`, plus keyword scans (`webhook signature`, `X-Signature`, `webhook header`, `timestamp`, `replay attack`, `hmac`, `secret`) returned no webhook-signature contract details.
+  - Slice 7 implementation status: webhook management surface (CRUD + event-types + sample payload + test-event) is implemented in capability-facing routes; inbound signature verification remains explicitly blocked.
 - **Confidence**: **Medium**
 
 ### Analytics
@@ -292,6 +296,7 @@ Current rollout progress:
 - Slice 4 (Sender emails + warmup + healthcheck): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/inboxes.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 - Slice 5 (Tags + variables + blocklists): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
 - Slice 6 (Workspaces + settings + analytics/stats): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py`, including auth-boundary, malformed payload tolerance, and provider error-shape tests.
+- Slice 7 (Webhook management surface only): implemented in `src/providers/emailbison/client.py` and capability-facing `src/routers/email_outreach.py` for CRUD/test/sample/event-types; inbound signature verification intentionally remains gated.
 
 ### Phase 1 - Provider foundation + read paths
 

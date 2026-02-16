@@ -1552,6 +1552,146 @@ def delete_webhook(
     raise EmailBisonProviderError("Unexpected EmailBison webhook delete response type")
 
 
+def list_webhooks(
+    api_key: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=["/api/webhook-url"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison list webhooks response shape")
+
+
+def create_webhook(
+    api_key: str,
+    name: str,
+    url: str,
+    events: list[str],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=["/api/webhook-url"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"name": name, "url": url, "events": events},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison create webhook response type")
+
+
+def get_webhook(
+    api_key: str,
+    webhook_id: int | str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    paths = webhook_resource_paths(webhook_id)
+    data = _request_json(
+        method="GET",
+        candidate_paths=[paths["read_update_canonical"]],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison get webhook response type")
+
+
+def update_webhook(
+    api_key: str,
+    webhook_id: int | str,
+    name: str,
+    url: str,
+    events: list[str],
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    paths = webhook_resource_paths(webhook_id)
+    data = _request_json(
+        method="PUT",
+        candidate_paths=[paths["read_update_canonical"]],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"name": name, "url": url, "events": events},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison update webhook response type")
+
+
+def get_webhook_event_types(
+    api_key: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=["/api/webhook-events/event-types"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise EmailBisonProviderError("Unexpected EmailBison webhook event types response shape")
+
+
+def get_sample_webhook_payload(
+    api_key: str,
+    event_type: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        candidate_paths=["/api/webhook-events/sample-payload"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        params={"event_type": event_type},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison sample webhook payload response type")
+
+
+def send_test_webhook_event(
+    api_key: str,
+    event_type: str,
+    url: str,
+    instance_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=["/api/webhook-events/test-event"],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={"event_type": event_type, "url": url},
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison send test webhook response type")
+
+
 def get_reply(
     api_key: str,
     reply_id: int | str,
@@ -1702,7 +1842,14 @@ EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     "get_workspace_master_inbox_settings": [{"method": "GET", "path": _EP_MASTER_INBOX_SETTINGS}],
     "update_workspace_master_inbox_settings": [{"method": "PATCH", "path": _EP_MASTER_INBOX_SETTINGS}],
     "get_campaign_events_stats": [{"method": "GET", "path": _EP_CAMPAIGN_EVENTS_STATS}],
+    "list_webhooks": [{"method": "GET", "path": "/api/webhook-url"}],
+    "create_webhook": [{"method": "POST", "path": "/api/webhook-url"}],
+    "get_webhook": [{"method": "GET", "path": "/api/webhook-url/{id}"}],
+    "update_webhook": [{"method": "PUT", "path": "/api/webhook-url/{id}"}],
     "delete_webhook": [{"method": "DELETE", "path": "/api/webhook-url/{id}"}],
+    "get_webhook_event_types": [{"method": "GET", "path": "/api/webhook-events/event-types"}],
+    "get_sample_webhook_payload": [{"method": "GET", "path": "/api/webhook-events/sample-payload"}],
+    "send_test_webhook_event": [{"method": "POST", "path": "/api/webhook-events/test-event"}],
 }
 
 

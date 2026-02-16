@@ -18,6 +18,10 @@ from src.models.email_outreach import (
     EmailOutreachTagAttachInboxesRequest,
     EmailOutreachTagAttachLeadsRequest,
     EmailOutreachTagCreateRequest,
+    EmailOutreachWebhookCreateRequest,
+    EmailOutreachWebhookSamplePayloadRequest,
+    EmailOutreachWebhookTestEventRequest,
+    EmailOutreachWebhookUpdateRequest,
     EmailOutreachWorkspaceMasterInboxSettingsUpdateRequest,
     EmailOutreachWorkspaceStatsRequest,
 )
@@ -34,9 +38,13 @@ from src.providers.emailbison.client import (
     create_tag as emailbison_create_tag,
     delete_blacklisted_domain as emailbison_delete_blacklisted_domain,
     delete_blacklisted_email as emailbison_delete_blacklisted_email,
+    delete_webhook as emailbison_delete_webhook,
     delete_tag as emailbison_delete_tag,
+    get_sample_webhook_payload as emailbison_get_sample_webhook_payload,
     get_campaign_events_stats as emailbison_get_campaign_events_stats,
     get_tag as emailbison_get_tag,
+    get_webhook as emailbison_get_webhook,
+    get_webhook_event_types as emailbison_get_webhook_event_types,
     get_workspace_account_details as emailbison_get_workspace_account_details,
     get_workspace_master_inbox_settings as emailbison_get_workspace_master_inbox_settings,
     get_workspace_stats as emailbison_get_workspace_stats,
@@ -44,10 +52,14 @@ from src.providers.emailbison.client import (
     list_blacklisted_emails as emailbison_list_blacklisted_emails,
     list_custom_variables as emailbison_list_custom_variables,
     list_tags as emailbison_list_tags,
+    list_webhooks as emailbison_list_webhooks,
     remove_tags_from_campaigns as emailbison_remove_tags_from_campaigns,
     remove_tags_from_leads as emailbison_remove_tags_from_leads,
     remove_tags_from_sender_emails as emailbison_remove_tags_from_sender_emails,
+    send_test_webhook_event as emailbison_send_test_webhook_event,
     update_workspace_master_inbox_settings as emailbison_update_workspace_master_inbox_settings,
+    update_webhook as emailbison_update_webhook,
+    create_webhook as emailbison_create_webhook,
 )
 
 
@@ -143,6 +155,132 @@ def _get_inboxes_for_auth(auth: AuthContext, inbox_ids: list[str]) -> list[dict[
     for inbox_id in inbox_ids:
         inboxes.append(_get_inbox_for_auth(auth, inbox_id))
     return inboxes
+
+
+@router.get("/webhooks")
+async def list_webhooks(auth: AuthContext = Depends(get_current_auth)):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        rows = emailbison_list_webhooks(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("webhooks_list", exc)
+    return {"provider": "email_outreach", "webhooks": rows}
+
+
+@router.post("/webhooks")
+async def create_webhook(data: EmailOutreachWebhookCreateRequest, auth: AuthContext = Depends(get_current_auth)):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        row = emailbison_create_webhook(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            name=data.name,
+            url=data.url,
+            events=data.events,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("webhooks_create", exc)
+    return {"provider": "email_outreach", "webhook": row}
+
+
+@router.get("/webhooks/{webhook_id}")
+async def get_webhook(webhook_id: str, auth: AuthContext = Depends(get_current_auth)):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        row = emailbison_get_webhook(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            webhook_id=webhook_id,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("webhooks_get", exc)
+    return {"provider": "email_outreach", "webhook": row}
+
+
+@router.put("/webhooks/{webhook_id}")
+async def update_webhook(
+    webhook_id: str,
+    data: EmailOutreachWebhookUpdateRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        row = emailbison_update_webhook(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            webhook_id=webhook_id,
+            name=data.name,
+            url=data.url,
+            events=data.events,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("webhooks_update", exc)
+    return {"provider": "email_outreach", "webhook": row}
+
+
+@router.delete("/webhooks/{webhook_id}")
+async def delete_webhook(webhook_id: str, auth: AuthContext = Depends(get_current_auth)):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        result = emailbison_delete_webhook(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            webhook_id=webhook_id,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("webhooks_delete", exc)
+    return {"provider": "email_outreach", "result": result}
+
+
+@router.get("/webhooks/event-types")
+async def get_webhook_event_types(auth: AuthContext = Depends(get_current_auth)):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        rows = emailbison_get_webhook_event_types(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("webhooks_event_types_get", exc)
+    return {"provider": "email_outreach", "event_types": rows}
+
+
+@router.post("/webhooks/sample-payload")
+async def get_sample_webhook_payload(
+    data: EmailOutreachWebhookSamplePayloadRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        payload = emailbison_get_sample_webhook_payload(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            event_type=data.event_type,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("webhooks_sample_payload_get", exc)
+    return {"provider": "email_outreach", "payload": payload}
+
+
+@router.post("/webhooks/test-event")
+async def send_test_webhook_event(
+    data: EmailOutreachWebhookTestEventRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    creds = _get_org_provider_config(auth.org_id, "emailbison")
+    try:
+        result = emailbison_send_test_webhook_event(
+            api_key=creds["api_key"],
+            instance_url=creds.get("instance_url"),
+            event_type=data.event_type,
+            url=data.url,
+        )
+    except EmailBisonProviderError as exc:
+        _raise_provider_http_error("webhooks_test_event_send", exc)
+    return {"provider": "email_outreach", "result": result}
 
 
 @router.get("/workspace/account")

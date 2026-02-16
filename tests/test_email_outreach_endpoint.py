@@ -318,3 +318,93 @@ def test_workspace_provider_error_shape_contracts(monkeypatch):
     assert terminal_detail["retryable"] is False
 
     _clear()
+
+
+def test_webhook_management_happy_paths(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+    monkeypatch.setattr(email_outreach_router, "emailbison_list_webhooks", lambda **kwargs: [{"id": 1}])
+    monkeypatch.setattr(email_outreach_router, "emailbison_create_webhook", lambda **kwargs: {"id": 2})
+    monkeypatch.setattr(email_outreach_router, "emailbison_get_webhook", lambda **kwargs: {"id": 1})
+    monkeypatch.setattr(email_outreach_router, "emailbison_update_webhook", lambda **kwargs: {"id": 1, "name": "Updated"})
+    monkeypatch.setattr(email_outreach_router, "emailbison_delete_webhook", lambda **kwargs: {"success": True})
+    monkeypatch.setattr(email_outreach_router, "emailbison_get_webhook_event_types", lambda **kwargs: [{"id": "email_sent"}])
+    monkeypatch.setattr(
+        email_outreach_router,
+        "emailbison_get_sample_webhook_payload",
+        lambda **kwargs: {"event": {"type": "EMAIL_SENT"}},
+    )
+    monkeypatch.setattr(email_outreach_router, "emailbison_send_test_webhook_event", lambda **kwargs: {"success": True})
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+    client = TestClient(app)
+
+    assert client.get("/api/email-outreach/webhooks").status_code == 200
+    assert client.post(
+        "/api/email-outreach/webhooks",
+        json={"name": "Hook", "url": "https://example.com/hook", "events": ["email_sent"]},
+    ).status_code == 200
+    assert client.get("/api/email-outreach/webhooks/1").status_code == 200
+    assert client.put(
+        "/api/email-outreach/webhooks/1",
+        json={"name": "Hook2", "url": "https://example.com/hook2", "events": ["lead_replied"]},
+    ).status_code == 200
+    assert client.delete("/api/email-outreach/webhooks/1").status_code == 200
+    assert client.get("/api/email-outreach/webhooks/event-types").status_code == 200
+    assert client.post("/api/email-outreach/webhooks/sample-payload", json={"event_type": "email_sent"}).status_code == 200
+    assert client.post(
+        "/api/email-outreach/webhooks/test-event",
+        json={"event_type": "email_sent", "url": "https://example.com/hook"},
+    ).status_code == 200
+
+    _clear()
+
+
+def test_webhook_management_malformed_payload_tolerance(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+    client = TestClient(app)
+
+    bad_create = client.post("/api/email-outreach/webhooks", json={"name": "Missing URL"})
+    assert bad_create.status_code == 422
+
+    bad_test = client.post("/api/email-outreach/webhooks/test-event", json={"event_type": "email_sent"})
+    assert bad_test.status_code == 422
+
+    _clear()
+
+
+def test_webhook_management_provider_error_shape_contracts(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(email_outreach_router, "supabase", fake_db)
+
+    def _raise_transient(**kwargs):
+        raise email_outreach_router.EmailBisonProviderError("EmailBison API returned HTTP 503: upstream unavailable")
+
+    def _raise_terminal(**kwargs):
+        raise email_outreach_router.EmailBisonProviderError("Invalid EmailBison API key")
+
+    monkeypatch.setattr(email_outreach_router, "emailbison_list_webhooks", _raise_transient)
+    monkeypatch.setattr(email_outreach_router, "emailbison_create_webhook", _raise_terminal)
+
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+    client = TestClient(app)
+
+    transient = client.get("/api/email-outreach/webhooks")
+    assert transient.status_code == 503
+    transient_detail = transient.json()["detail"]
+    assert transient_detail["type"] == "provider_error"
+    assert transient_detail["provider"] == "emailbison"
+    assert transient_detail["retryable"] is True
+
+    terminal = client.post(
+        "/api/email-outreach/webhooks",
+        json={"name": "Hook", "url": "https://example.com/hook", "events": ["email_sent"]},
+    )
+    assert terminal.status_code == 502
+    terminal_detail = terminal.json()["detail"]
+    assert terminal_detail["type"] == "provider_error"
+    assert terminal_detail["provider"] == "emailbison"
+    assert terminal_detail["retryable"] is False
+
+    _clear()
