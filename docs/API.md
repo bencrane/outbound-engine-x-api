@@ -244,7 +244,7 @@ Durable metrics export:
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/linkedin/campaigns/` | Create LinkedIn campaign |
-| GET | `/api/linkedin/campaigns/` | List LinkedIn campaigns (`mine_only` optional) |
+| GET | `/api/linkedin/campaigns/` | List LinkedIn campaigns (`mine_only` optional). Org-admin can use `all_companies=true` for cross-company view, or `company_id` for specific company scope |
 | GET | `/api/linkedin/campaigns/{campaign_id}` | Get LinkedIn campaign |
 | POST | `/api/linkedin/campaigns/{campaign_id}/action` | Campaign action (`pause` or `resume`) |
 | POST | `/api/linkedin/campaigns/{campaign_id}/leads` | Add LinkedIn leads |

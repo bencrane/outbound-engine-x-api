@@ -63,6 +63,38 @@ def _resolve_company_id(auth: AuthContext, company_id: str | None) -> str:
     return company_id
 
 
+def _resolve_company_scope(
+    auth: AuthContext,
+    *,
+    company_id: str | None,
+    all_companies: bool,
+) -> str | None:
+    if auth.company_id:
+        if all_companies:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="All-companies view is admin only")
+        if company_id and company_id != auth.company_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+        return auth.company_id
+
+    if auth.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+
+    if all_companies:
+        if company_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="company_id cannot be combined with all_companies=true",
+            )
+        return None
+
+    if not company_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="company_id is required for org-level callers",
+        )
+    return company_id
+
+
 def _get_company(auth: AuthContext, company_id: str) -> dict[str, Any]:
     result = (
         supabase.table("companies")
@@ -147,6 +179,18 @@ def _get_campaign_for_auth(auth: AuthContext, campaign_id: str) -> dict[str, Any
     if not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
     return result.data[0]
+
+
+def _get_heyreach_provider_id() -> str:
+    provider = (
+        supabase.table("providers")
+        .select("id")
+        .eq("slug", "heyreach")
+        .execute()
+    )
+    if not provider.data:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Provider not configured")
+    return provider.data[0]["id"]
 
 
 def _extract_provider_lead(lead: dict[str, Any]) -> dict[str, Any] | None:
@@ -276,20 +320,29 @@ async def create_linkedin_campaign(
 @router.get("/", response_model=list[LinkedinCampaignResponse])
 async def list_linkedin_campaigns(
     company_id: str | None = Query(None),
+    all_companies: bool = Query(False),
     mine_only: bool = Query(False),
     auth: AuthContext = Depends(get_current_auth),
 ):
-    resolved_company_id = _resolve_company_id(auth, company_id)
-    _get_company(auth, resolved_company_id)
-    _get_heyreach_entitlement(auth.org_id, resolved_company_id)
+    resolved_company_id = _resolve_company_scope(
+        auth,
+        company_id=company_id,
+        all_companies=all_companies,
+    )
+    if resolved_company_id:
+        _get_company(auth, resolved_company_id)
+        _get_heyreach_entitlement(auth.org_id, resolved_company_id)
+    heyreach_provider_id = _get_heyreach_provider_id()
 
     query = (
         supabase.table("company_campaigns")
         .select("id, company_id, provider_id, external_campaign_id, name, status, created_by_user_id, created_at, updated_at")
         .eq("org_id", auth.org_id)
-        .eq("company_id", resolved_company_id)
+        .eq("provider_id", heyreach_provider_id)
         .is_("deleted_at", "null")
     )
+    if resolved_company_id:
+        query = query.eq("company_id", resolved_company_id)
     if mine_only:
         query = query.eq("created_by_user_id", auth.user_id)
     result = query.execute()

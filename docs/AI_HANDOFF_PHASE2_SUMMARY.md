@@ -156,14 +156,19 @@ It uses endpoint fallbacks for compatibility across Smartlead variants and raise
 - `tests/test_inboxes_endpoint.py`
 - `tests/test_campaigns_endpoints.py`
 - `tests/test_webhooks_endpoint.py`
+- Authorization matrices (current canonical set):
+  - `tests/test_analytics_authorization_matrix.py`
+  - `tests/test_internal_reconciliation_authorization_matrix.py`
+  - `tests/test_webhooks_authorization_matrix.py`
+  - `tests/test_internal_provisioning_authorization_matrix.py`
 
-Current focused suite status: **passing** (19 tests).
+Current suite status has expanded beyond the original 19-test checkpoint; use the live repo test set as source of truth.
 
 Run command:
 
 ```bash
 source .venv/bin/activate
-PYTHONPATH=. pytest -q tests/test_campaigns_endpoints.py tests/test_phase1_provisioning_endpoints.py tests/test_inboxes_endpoint.py tests/test_webhooks_endpoint.py
+PYTHONPATH=. pytest -q tests/test_campaigns_endpoints.py tests/test_linkedin_campaigns_endpoints.py tests/test_analytics_authorization_matrix.py tests/test_internal_reconciliation_authorization_matrix.py tests/test_webhooks_authorization_matrix.py tests/test_internal_provisioning_authorization_matrix.py
 ```
 
 ---
@@ -187,9 +192,9 @@ Both were pushed to `main` to trigger Railway auto-deploy.
 - Optional secret: `smartlead_webhook_secret`.
 - If set, requests must include `X-Smartlead-Signature` (HMAC SHA-256 over raw body).
 
-3. **Pydantic warning**
-- Existing warning in `src/config.py` about class-based config deprecation.
-- Non-blocking, but should be cleaned (`ConfigDict`) in a future pass.
+3. **Pydantic settings config**
+- `src/config.py` now uses `SettingsConfigDict`/`model_config` (Pydantic v2-compatible).
+- No action required for the prior class-based config deprecation note in this handoff context.
 
 ---
 

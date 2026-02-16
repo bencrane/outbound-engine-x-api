@@ -71,7 +71,12 @@ Interpretation: HeyReach reconciliation is operationally stable for the currentl
 1. Authorization matrix expansion (phase increment completed)
 - Webhook list/replay endpoints and LinkedIn role/company boundary tests are now covered.
 - Non-LinkedIn campaign and internal provisioning role-boundary tests are now covered.
-- Remaining work: deepen coverage for analytics and internal scheduler misuse patterns.
+- Analytics and scheduler misuse coverage are now present in:
+  - `tests/test_analytics_authorization_matrix.py`
+  - `tests/test_internal_reconciliation_authorization_matrix.py`
+  - `tests/test_webhooks_authorization_matrix.py`
+  - `tests/test_internal_provisioning_authorization_matrix.py`
+- Remaining work: incremental depth for edge-case permutations, not baseline access-control coverage.
 
 2. Operator runbook (phase increment completed)
 - `docs/WEBHOOK_INCIDENT_RUNBOOK.md` added with step-by-step incident recovery.
@@ -98,7 +103,7 @@ Interpretation: HeyReach reconciliation is operationally stable for the currentl
 1. Execute runbook drills with operational owners and record outcomes.
 2. Validate if/where `pull_best_effort` should be promoted from opt-in to default for HeyReach.
 3. Add taxonomy-aware alert routing thresholds (transient burst vs terminal misconfig).
-4. Deepen authorization boundary tests around analytics/internal scheduler misuse cases.
+4. Extend authorization matrices for additional edge-case permutations (baseline analytics/internal scheduler misuse coverage is complete).
 5. Integrate external sink destination ownership checks (payload contract validation, SLOs, and sink health monitors).
 
 ## Practical Readiness Assessment

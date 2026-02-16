@@ -294,6 +294,89 @@ def test_linkedin_org_admin_requires_company_id_for_list(monkeypatch):
     _clear()
 
 
+def test_linkedin_org_admin_can_list_all_companies(monkeypatch):
+    tables = _base_tables()
+    tables["companies"].append({"id": "c-2", "org_id": "org-1", "deleted_at": None})
+    tables["providers"].append({"id": "prov-smartlead", "slug": "smartlead", "capability_id": "cap-email"})
+    tables["company_campaigns"] = [
+        {
+            "id": "cmp-li-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-heyreach",
+            "external_campaign_id": "hr-1",
+            "name": "LinkedIn C1",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+        {
+            "id": "cmp-li-2",
+            "org_id": "org-1",
+            "company_id": "c-2",
+            "provider_id": "prov-heyreach",
+            "external_campaign_id": "hr-2",
+            "name": "LinkedIn C2",
+            "status": "PAUSED",
+            "created_by_user_id": "u-2",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+        {
+            "id": "cmp-email-1",
+            "org_id": "org-1",
+            "company_id": "c-1",
+            "provider_id": "prov-smartlead",
+            "external_campaign_id": "sl-1",
+            "name": "Email C1",
+            "status": "ACTIVE",
+            "created_by_user_id": "u-1",
+            "created_at": _ts(),
+            "updated_at": _ts(),
+            "deleted_at": None,
+        },
+    ]
+    fake_db = FakeSupabase(tables)
+    monkeypatch.setattr(linkedin_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/linkedin/campaigns/?all_companies=true")
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 2
+    assert {row["company_id"] for row in rows} == {"c-1", "c-2"}
+    assert all(row["provider_id"] == "prov-heyreach" for row in rows)
+    _clear()
+
+
+def test_linkedin_company_scoped_user_cannot_use_all_companies(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(linkedin_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-1", role="user", company_id="c-1", auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/linkedin/campaigns/?all_companies=true")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "All-companies view is admin only"
+    _clear()
+
+
+def test_linkedin_org_admin_cannot_combine_all_companies_and_company_id(monkeypatch):
+    fake_db = FakeSupabase(_base_tables())
+    monkeypatch.setattr(linkedin_router, "supabase", fake_db)
+    _set_auth(AuthContext(org_id="org-1", user_id="u-admin", role="admin", company_id=None, auth_method="session"))
+
+    client = TestClient(app)
+    response = client.get("/api/linkedin/campaigns/?all_companies=true&company_id=c-1")
+    assert response.status_code == 400
+    assert "cannot be combined with all_companies=true" in response.json()["detail"]
+    _clear()
+
+
 def test_linkedin_company_user_cannot_target_different_company(monkeypatch):
     tables = _base_tables()
     tables["companies"].append({"id": "c-2", "org_id": "org-1", "deleted_at": None})
