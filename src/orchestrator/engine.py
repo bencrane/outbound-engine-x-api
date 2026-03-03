@@ -7,6 +7,7 @@ from typing import Any
 from src.config import settings
 from src.db import supabase
 from src.observability import incr_metric, log_event
+from src.orchestrator.conditions import should_skip_step
 from src.orchestrator.step_executor import execute_step
 
 
@@ -42,10 +43,10 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def _get_campaign_org_id(company_campaign_id: str) -> str:
+def _get_campaign(company_campaign_id: str) -> dict[str, Any]:
     campaign_rows = (
         supabase.table("company_campaigns")
-        .select("org_id")
+        .select("id, org_id, company_id")
         .eq("id", company_campaign_id)
         .is_("deleted_at", "null")
         .execute()
@@ -54,7 +55,7 @@ def _get_campaign_org_id(company_campaign_id: str) -> str:
     )
     if not campaign_rows or not campaign_rows[0].get("org_id"):
         raise ValueError(f"campaign not found for progress row campaign_id={company_campaign_id}")
-    return str(campaign_rows[0]["org_id"])
+    return campaign_rows[0]
 
 
 def _get_lead_provider_id_map(org_id: str, company_campaign_lead_id: str) -> dict[str, str]:
@@ -94,6 +95,89 @@ def _next_retry_ts(attempts: int) -> datetime:
         settings.orchestrator_retry_max_minutes,
     )
     return _now_utc() + timedelta(minutes=retry_minutes)
+
+
+def _write_campaign_event(
+    *,
+    campaign: dict[str, Any],
+    progress: dict[str, Any],
+    step: dict[str, Any],
+    event_type: str,
+    provider_slug: str | None,
+    payload: dict[str, Any] | None,
+) -> None:
+    try:
+        supabase.table("campaign_events").insert(
+            {
+                "org_id": campaign["org_id"],
+                "company_id": campaign.get("company_id"),
+                "company_campaign_id": campaign["id"],
+                "company_campaign_lead_id": progress["company_campaign_lead_id"],
+                "event_type": event_type,
+                "channel": step.get("channel"),
+                "provider_slug": provider_slug,
+                "step_order": step.get("step_order"),
+                "payload": payload,
+            }
+        ).execute()
+    except Exception as exc:
+        log_event(
+            "orchestrator_campaign_event_write_failed",
+            campaign_id=campaign.get("id"),
+            lead_id=progress.get("company_campaign_lead_id"),
+            step_order=step.get("step_order"),
+            event_type=event_type,
+            error=str(exc),
+        )
+
+
+def _advance_progress_to_next_or_complete(
+    *,
+    progress_id: str,
+    org_id: str,
+    campaign_id: str,
+    current_step_order: int,
+    current_step_status: str,
+) -> bool:
+    next_order = int(current_step_order or 0) + 1
+    next_step = _get_next_step(org_id, campaign_id, next_order)
+    if next_step:
+        delay_days = int(next_step.get("delay_days") or 0)
+        next_execute_at = _now_utc() + timedelta(days=delay_days)
+        (
+            supabase.table("campaign_lead_progress")
+            .update(
+                {
+                    "current_step_id": next_step["id"],
+                    "current_step_order": next_order,
+                    "step_status": "pending",
+                    "next_execute_at": _to_iso(next_execute_at),
+                    "attempts": 0,
+                    "updated_at": _to_iso(_now_utc()),
+                    "executed_at": _to_iso(_now_utc()) if current_step_status == "executed" else None,
+                }
+            )
+            .eq("id", progress_id)
+            .eq("org_id", org_id)
+            .execute()
+        )
+        return False
+    (
+        supabase.table("campaign_lead_progress")
+        .update(
+            {
+                "step_status": "completed",
+                "completed_at": _to_iso(_now_utc()),
+                "next_execute_at": None,
+                "executed_at": _to_iso(_now_utc()) if current_step_status == "executed" else None,
+                "updated_at": _to_iso(_now_utc()),
+            }
+        )
+        .eq("id", progress_id)
+        .eq("org_id", org_id)
+        .execute()
+    )
+    return True
 
 
 def _recover_stale_executing_rows() -> int:
@@ -247,12 +331,54 @@ def run_orchestrator_tick(
                 raise ValueError(f"lead not found for progress id={progress_id}")
             lead = lead_rows[0]
 
-            org_id = _get_campaign_org_id(company_campaign_id)
+            campaign = _get_campaign(company_campaign_id)
+            org_id = str(campaign["org_id"])
             lead_provider_ids = _get_lead_provider_id_map(org_id, company_campaign_lead_id)
 
             result.leads_processed += 1
             if dry_run:
                 continue
+
+            if step.get("skip_if"):
+                if should_skip_step(
+                    skip_if=step["skip_if"],
+                    lead_id=company_campaign_lead_id,
+                    campaign_id=company_campaign_id,
+                    org_id=org_id,
+                ):
+                    (
+                        supabase.table("campaign_lead_progress")
+                        .update(
+                            {
+                                "step_status": "skipped",
+                                "attempts": int(progress.get("attempts") or 0),
+                                "last_error": None,
+                                "updated_at": _to_iso(_now_utc()),
+                            }
+                        )
+                        .eq("id", progress_id)
+                        .eq("org_id", org_id)
+                        .execute()
+                    )
+                    _write_campaign_event(
+                        campaign=campaign,
+                        progress=progress,
+                        step=step,
+                        event_type=f"step_{step['action_type']}_skipped",
+                        provider_slug=None,
+                        payload={"skip_if": step.get("skip_if")},
+                    )
+                    if _advance_progress_to_next_or_complete(
+                        progress_id=progress_id,
+                        org_id=org_id,
+                        campaign_id=company_campaign_id,
+                        current_step_order=int(progress.get("current_step_order") or 0),
+                        current_step_status="skipped",
+                    ):
+                        result.leads_completed += 1
+                        incr_metric("orchestrator.steps.completed")
+                    incr_metric("orchestrator.steps.skipped")
+                    continue
 
             (
                 supabase.table("campaign_lead_progress")
@@ -296,6 +422,14 @@ def run_orchestrator_tick(
                     .eq("org_id", org_id)
                     .execute()
                 )
+                _write_campaign_event(
+                    campaign=campaign,
+                    progress=progress,
+                    step=step,
+                    event_type=f"step_{step['action_type']}_succeeded",
+                    provider_slug=execution_result.provider_slug,
+                    payload=execution_result.raw_response,
+                )
 
                 external_id = execution_result.external_id
                 provider_id = step.get("provider_id")
@@ -307,44 +441,15 @@ def run_orchestrator_tick(
                         external_id=str(external_id),
                     )
 
-                next_order = int(progress.get("current_step_order") or 0) + 1
-                next_step = _get_next_step(org_id, company_campaign_id, next_order)
-                if next_step:
-                    delay_days = int(next_step.get("delay_days") or 0)
-                    next_execute_at = _now_utc() + timedelta(days=delay_days)
-                    (
-                        supabase.table("campaign_lead_progress")
-                        .update(
-                            {
-                                "current_step_id": next_step["id"],
-                                "current_step_order": next_order,
-                                "step_status": "pending",
-                                "next_execute_at": _to_iso(next_execute_at),
-                                "attempts": 0,
-                                "updated_at": _to_iso(_now_utc()),
-                            }
-                        )
-                        .eq("id", progress_id)
-                        .eq("org_id", org_id)
-                        .execute()
-                    )
-                else:
+                if _advance_progress_to_next_or_complete(
+                    progress_id=progress_id,
+                    org_id=org_id,
+                    campaign_id=company_campaign_id,
+                    current_step_order=int(progress.get("current_step_order") or 0),
+                    current_step_status="executed",
+                ):
                     result.leads_completed += 1
                     incr_metric("orchestrator.steps.completed")
-                    (
-                        supabase.table("campaign_lead_progress")
-                        .update(
-                            {
-                                "step_status": "completed",
-                                "completed_at": _to_iso(_now_utc()),
-                                "next_execute_at": None,
-                                "updated_at": _to_iso(_now_utc()),
-                            }
-                        )
-                        .eq("id", progress_id)
-                        .eq("org_id", org_id)
-                        .execute()
-                    )
                 continue
 
             incr_metric(
@@ -354,6 +459,14 @@ def run_orchestrator_tick(
                 outcome="failure",
             )
             attempts = int(progress.get("attempts") or 0) + 1
+            _write_campaign_event(
+                campaign=campaign,
+                progress=progress,
+                step=step,
+                event_type=f"step_{step['action_type']}_failed",
+                provider_slug=execution_result.provider_slug,
+                payload=execution_result.raw_response or {"error": execution_result.error_message},
+            )
             if execution_result.retryable:
                 if attempts >= settings.orchestrator_max_retries:
                     result.steps_failed += 1

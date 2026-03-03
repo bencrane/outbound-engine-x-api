@@ -34,6 +34,7 @@ from src.models.webhooks import (
     WebhookReplayResponse,
 )
 from src.observability import incr_metric, log_event, metrics_snapshot, persist_metrics_snapshot
+from src.orchestrator.event_bridge import process_engagement_event
 
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
@@ -796,6 +797,24 @@ def _resolve_campaign(campaign_external_id: str, provider_slug: str) -> dict[str
     return campaign.data[0]
 
 
+def _get_campaign_provider_slug(campaign: dict[str, Any]) -> str:
+    provider_id = campaign.get("provider_id")
+    if not provider_id:
+        return "unknown"
+    rows = (
+        supabase.table("providers")
+        .select("slug")
+        .eq("id", provider_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows or not rows[0].get("slug"):
+        return "unknown"
+    return str(rows[0]["slug"])
+
+
 def _resolve_direct_mail_piece(
     *,
     provider_slug: str,
@@ -926,6 +945,18 @@ def _apply_event_to_local_state(
         else ("outbound" if ("message" in event_type.lower() or "sent" in event_type.lower()) else "unknown")
     )
     _upsert_message(campaign, local_lead_id, payload, direction=direction)
+    if local_lead_id:
+        try:
+            process_engagement_event(
+                org_id=campaign["org_id"],
+                campaign_id=campaign["id"],
+                lead_id=local_lead_id,
+                event_type=event_type,
+                provider_slug=_get_campaign_provider_slug(campaign),
+                payload=payload,
+            )
+        except Exception:
+            pass
 
 
 def _get_webhook_event(provider_slug: str, event_key: str) -> dict[str, Any] | None:
