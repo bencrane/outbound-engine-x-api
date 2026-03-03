@@ -88,6 +88,7 @@ CHANNEL_CAPABILITY_MAP: dict[str, str] = {
     "email": "email_outreach",
     "linkedin": "linkedin_outreach",
     "direct_mail": "direct_mail",
+    "voicemail": "voicemail_drop",
 }
 
 

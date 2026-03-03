@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
-SequenceChannel = Literal["email", "linkedin", "direct_mail"]
+SequenceChannel = Literal["email", "linkedin", "direct_mail", "voicemail"]
 SequenceExecutionMode = Literal["direct_single_touch", "campaign_mediated"]
 SequenceActionType = Literal[
     "send_email",
@@ -13,6 +13,7 @@ SequenceActionType = Literal[
     "send_linkedin_message",
     "send_postcard",
     "send_letter",
+    "send_voicemail",
 ]
 LeadStepStatus = Literal[
     "pending",

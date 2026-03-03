@@ -7,6 +7,7 @@ from src.db import supabase
 from src.providers.emailbison.client import EmailBisonProviderError, compose_new_email
 from src.providers.heyreach.client import HeyReachProviderError, add_campaign_leads
 from src.providers.lob.client import LobProviderError, create_letter, create_postcard
+from src.providers.voicedrop.client import VoiceDropProviderError, send_ringless_voicemail
 
 
 class StepExecutionError(Exception):
@@ -247,6 +248,65 @@ def execute_step(
                 raw_response=response,
             )
 
+        if channel == "voicemail" and execution_mode == "direct_single_touch":
+            to_phone = str(lead.get("phone") or lead.get("phone_number") or "").strip()
+            if not to_phone:
+                return StepExecutionResult(
+                    success=False,
+                    provider_slug=provider_slug,
+                    action_type=action_type,
+                    error_message="Lead is missing phone for voicemail touch",
+                    retryable=False,
+                )
+
+            from_number = str(action_config.get("from_number") or "").strip()
+            if not from_number:
+                return StepExecutionResult(
+                    success=False,
+                    provider_slug=provider_slug,
+                    action_type=action_type,
+                    error_message="Missing from_number for voicemail step",
+                    retryable=False,
+                )
+
+            voice_clone_id_raw = action_config.get("voice_clone_id")
+            script_raw = action_config.get("script")
+            recording_url_raw = action_config.get("recording_url")
+
+            voice_clone_id = str(voice_clone_id_raw).strip() if voice_clone_id_raw is not None else None
+            if voice_clone_id == "":
+                voice_clone_id = None
+            script = str(script_raw).strip() if script_raw is not None else None
+            if script == "":
+                script = None
+            recording_url = str(recording_url_raw).strip() if recording_url_raw is not None else None
+            if recording_url == "":
+                recording_url = None
+
+            validate_recipient_phone = bool(action_config.get("validate_recipient_phone", False))
+            webhook_raw = action_config.get("send_status_to_webhook")
+            send_status_to_webhook = str(webhook_raw).strip() if webhook_raw is not None else None
+            if send_status_to_webhook == "":
+                send_status_to_webhook = None
+
+            response = send_ringless_voicemail(
+                api_key=str(api_key),
+                to=to_phone,
+                from_number=from_number,
+                voice_clone_id=voice_clone_id,
+                script=script,
+                recording_url=recording_url,
+                validate_recipient_phone=validate_recipient_phone,
+                send_status_to_webhook=send_status_to_webhook,
+            )
+            return StepExecutionResult(
+                success=True,
+                provider_slug=provider_slug,
+                action_type=action_type,
+                external_id=_extract_external_id(response),
+                raw_response=response,
+            )
+
         return StepExecutionResult(
             success=False,
             provider_slug=provider_slug,
@@ -262,7 +322,7 @@ def execute_step(
             error_message=str(exc),
             retryable=exc.retryable,
         )
-    except (EmailBisonProviderError, HeyReachProviderError, LobProviderError) as exc:
+    except (EmailBisonProviderError, HeyReachProviderError, LobProviderError, VoiceDropProviderError) as exc:
         return StepExecutionResult(
             success=False,
             provider_slug=provider_slug,
