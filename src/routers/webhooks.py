@@ -215,6 +215,20 @@ def _allowed_emailbison_origin_hosts() -> set[str]:
     return allowed
 
 
+def _allowed_voicedrop_origin_hosts() -> set[str]:
+    configured = str(settings.voicedrop_webhook_allowed_origins or "").split(",")
+    allowed: set[str] = set()
+    for item in configured:
+        value = item.strip()
+        if not value:
+            continue
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+        host = (parsed.hostname or value).strip().lower()
+        if host:
+            allowed.add(host)
+    return allowed
+
+
 def _request_origin_host(request: Request) -> str | None:
     origin = request.headers.get("Origin")
     referer = request.headers.get("Referer")
@@ -281,6 +295,52 @@ def _verify_emailbison_unsigned_contract_or_raise(*, request: Request, path_toke
                 "provider": "emailbison",
                 "reason": "origin_not_allowed",
                 "message": "EmailBison webhook origin is not allowlisted",
+            },
+        )
+    return origin_host
+
+
+def _verify_voicedrop_unsigned_contract_or_raise(*, request: Request, path_token: str) -> str:
+    configured_token = settings.voicedrop_webhook_path_token
+    if not configured_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "type": "webhook_ingress_configuration_error",
+                "provider": "voicedrop",
+                "message": "VOICEDROP_WEBHOOK_PATH_TOKEN is not configured",
+            },
+        )
+    if not hmac.compare_digest(path_token, configured_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "type": "webhook_auth_failed",
+                "provider": "voicedrop",
+                "reason": "invalid_path_token",
+                "message": "Invalid VoiceDrop webhook path token",
+            },
+        )
+    origin_host = _request_origin_host(request)
+    allowlist = _allowed_voicedrop_origin_hosts()
+    if not origin_host:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "type": "webhook_auth_failed",
+                "provider": "voicedrop",
+                "reason": "missing_origin",
+                "message": "Missing origin host signal for VoiceDrop webhook",
+            },
+        )
+    if not allowlist or not _is_allowed_origin(origin_host, allowlist):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "type": "webhook_auth_failed",
+                "provider": "voicedrop",
+                "reason": "origin_not_allowed",
+                "message": "VoiceDrop webhook origin is not allowlisted",
             },
         )
     return origin_host
@@ -763,6 +823,62 @@ def _process_emailbison_event_async(
             level=logging.ERROR,
             request_id=request_id,
             provider_slug="emailbison",
+            event_type=event_type,
+            event_key=event_key,
+            error=str(exc),
+        )
+
+
+def _process_voicedrop_event_async(
+    *,
+    event_key: str,
+    event_type: str,
+    payload: dict[str, Any],
+    request_id: str | None,
+) -> None:
+    campaign_external_id = _extract_campaign_id(payload)
+    campaign = _resolve_campaign(campaign_external_id, "voicedrop") if campaign_external_id else None
+    org_id = campaign["org_id"] if campaign else payload.get("org_id")
+    company_id = campaign["company_id"] if campaign else payload.get("company_id")
+    try:
+        _apply_event_to_local_state(campaign=campaign, event_type=event_type, payload=payload)
+        supabase.table("webhook_events").update(
+            {
+                "status": "processed",
+                "processed_at": _now_iso(),
+                "last_error": None,
+                "org_id": org_id,
+                "company_id": company_id,
+            }
+        ).eq("provider_slug", "voicedrop").eq("event_key", event_key).execute()
+        incr_metric("webhook.events.processed", provider_slug="voicedrop")
+        log_event(
+            "webhook_processed_async",
+            request_id=request_id,
+            provider_slug="voicedrop",
+            event_type=event_type,
+            event_key=event_key,
+            campaign_found=bool(campaign),
+        )
+    except Exception as exc:
+        incr_metric("webhook.events.failed", provider_slug="voicedrop")
+        _record_dead_letter(
+            provider_slug="voicedrop",
+            event_key=event_key,
+            event_type=event_type,
+            payload=payload,
+            org_id=org_id,
+            company_id=company_id,
+            reason="projection_failure",
+            error=str(exc),
+            retryable=_is_projection_retryable(exc),
+            request_id=request_id,
+        )
+        log_event(
+            "webhook_async_processing_failed",
+            level=logging.ERROR,
+            request_id=request_id,
+            provider_slug="voicedrop",
             event_type=event_type,
             event_key=event_key,
             error=str(exc),
@@ -1409,6 +1525,103 @@ async def ingest_emailbison_webhook(
     }
 
 
+@router.post("/voicedrop")
+async def ingest_voicedrop_webhook_without_path_token():
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={
+            "type": "webhook_auth_failed",
+            "provider": "voicedrop",
+            "reason": "missing_path_token",
+            "message": "VoiceDrop webhook requires a secret path token",
+        },
+    )
+
+
+@router.post("/voicedrop/{path_token}", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_voicedrop_webhook(
+    path_token: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    req_id = _request_id(request)
+    raw_body = await request.body()
+    incr_metric("webhook.events.received", provider_slug="voicedrop")
+    origin_host = _verify_voicedrop_unsigned_contract_or_raise(request=request, path_token=path_token)
+
+    malformed_json = False
+    try:
+        parsed_payload = json.loads(raw_body.decode("utf-8"))
+    except json.JSONDecodeError:
+        parsed_payload = {"raw_body": raw_body.decode("utf-8", errors="replace")}
+        malformed_json = True
+    payload = parsed_payload if isinstance(parsed_payload, dict) else {"raw_payload": parsed_payload}
+    event_type = _extract_event_type(payload)
+    event_key = _compute_event_key(payload, raw_body)
+    campaign_external_id = _extract_campaign_id(payload)
+    campaign = _resolve_campaign(campaign_external_id, "voicedrop") if campaign_external_id else None
+    org_id = campaign["org_id"] if campaign else None
+    company_id = campaign["company_id"] if campaign else None
+    received_at = _now_iso()
+
+    enriched_payload = dict(payload)
+    enriched_payload["_ingestion"] = {
+        "provider_slug": "voicedrop",
+        "trust_mode": "unsigned_origin_plus_path_token",
+        "origin_host": origin_host,
+        "received_at": received_at,
+        "request_headers": {k: v for k, v in request.headers.items()},
+        "raw_body": raw_body.decode("utf-8", errors="replace"),
+        "request_id": req_id,
+    }
+    if malformed_json:
+        enriched_payload["malformed_json"] = True
+
+    log_event(
+        "webhook_received",
+        request_id=req_id,
+        provider_slug="voicedrop",
+        event_type=event_type,
+        event_key=event_key,
+        trust_mode="unsigned_origin_plus_path_token",
+        origin_host=origin_host,
+        has_campaign_id=bool(campaign_external_id),
+    )
+
+    try:
+        _persist_event_or_raise_duplicate(
+            "voicedrop",
+            event_key,
+            event_type,
+            enriched_payload,
+            org_id,
+            company_id,
+            initial_status="accepted",
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_200_OK:
+            incr_metric("webhook.events.duplicate", provider_slug="voicedrop")
+            incr_metric("webhook.duplicate_ignored", provider_slug="voicedrop")
+            return {"status": "duplicate_ignored", "event_type": event_type, "event_key": event_key}
+        raise
+
+    incr_metric("webhook.events.accepted", provider_slug="voicedrop")
+    background_tasks.add_task(
+        _process_voicedrop_event_async,
+        event_key=event_key,
+        event_type=event_type,
+        payload=enriched_payload,
+        request_id=req_id,
+    )
+    return {
+        "status": "accepted",
+        "event_type": event_type,
+        "event_key": event_key,
+        "trust_mode": "unsigned_origin_plus_path_token",
+        "non_cryptographic_trust": True,
+    }
+
+
 @router.post("/lob")
 async def ingest_lob_webhook(request: Request):
     req_id = _request_id(request)
@@ -1615,7 +1828,7 @@ async def list_webhook_events(
     offset: int = 0,
     _ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
-    if provider_slug and provider_slug not in {"smartlead", "heyreach", "emailbison", "lob"}:
+    if provider_slug and provider_slug not in {"smartlead", "heyreach", "emailbison", "lob", "voicedrop"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported provider")
     bounded_limit = max(1, min(limit, 200))
     bounded_offset = max(0, offset)
@@ -1854,7 +2067,7 @@ async def replay_webhook_event(
     request: Request,
     _ctx: SuperAdminContext = Depends(get_current_super_admin),
 ):
-    if provider_slug not in {"smartlead", "heyreach", "emailbison", "lob"}:
+    if provider_slug not in {"smartlead", "heyreach", "emailbison", "lob", "voicedrop"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported provider")
     event_row = _get_webhook_event(provider_slug, event_key)
     if not event_row:

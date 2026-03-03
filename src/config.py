@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     heyreach_webhook_secret: str | None = None
     emailbison_webhook_path_token: str | None = None
     emailbison_webhook_allowed_origins: str = "app.emailbison.com,emailbison.com"
+    voicedrop_webhook_path_token: str | None = None
+    voicedrop_webhook_allowed_origins: str = "api.voicedrop.ai,voicedrop.ai"
     internal_scheduler_secret: str | None = None
     orchestrator_tick_batch_size: int = 50
     orchestrator_tick_enabled: bool = True
