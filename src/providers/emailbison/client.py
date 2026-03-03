@@ -17,6 +17,7 @@ _EP_USERS = "/api/users"
 _EP_CAMPAIGNS = "/api/campaigns"
 _EP_LEADS = "/api/leads"
 _EP_REPLIES = "/api/replies"
+_EP_REPLIES_NEW = "/api/replies/new"
 _EP_SENDER_EMAILS = "/api/sender-emails"
 _EP_WARMUP_SENDER_EMAILS = "/api/warmup/sender-emails"
 _EP_TAGS = "/api/tags"
@@ -725,6 +726,36 @@ def list_replies(
     if isinstance(data, dict) and isinstance(data.get("items"), list):
         return data["items"]
     raise EmailBisonProviderError("Unexpected EmailBison replies response shape")
+
+
+def compose_new_email(
+    api_key: str,
+    *,
+    instance_url: str | None = None,
+    to_emails: list[dict[str, str]],
+    subject: str,
+    message: str,
+    sender_email_id: int,
+    content_type: str = "html",
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        candidate_paths=[_EP_REPLIES_NEW],
+        api_key=api_key,
+        instance_url=instance_url,
+        timeout_seconds=timeout_seconds,
+        json_payload={
+            "to_emails": to_emails,
+            "subject": subject,
+            "message": message,
+            "sender_email_id": sender_email_id,
+            "content_type": content_type,
+        },
+    )
+    if isinstance(data, dict):
+        return data
+    raise EmailBisonProviderError("Unexpected EmailBison compose new email response type")
 
 
 def get_campaign_stats(
@@ -1939,6 +1970,7 @@ EMAILBISON_IMPLEMENTED_ENDPOINT_REGISTRY: dict[str, list[dict[str, str]]] = {
     "stop_future_emails_for_leads": [{"method": "POST", "path": "/api/campaigns/{campaign_id}/leads/stop-future-emails"}],
     "remove_leads_from_campaign": [{"method": "DELETE", "path": "/api/campaigns/{campaign_id}/leads"}],
     "list_replies": [{"method": "GET", "path": _EP_REPLIES}],
+    "compose_new_email": [{"method": "POST", "path": _EP_REPLIES_NEW}],
     "get_reply": [{"method": "GET", "path": "/api/replies/{id}"}],
     "get_reply_conversation_thread": [{"method": "GET", "path": "/api/replies/{reply_id}/conversation-thread"}],
     "list_campaign_replies": [{"method": "GET", "path": "/api/campaigns/{campaign_id}/replies"}],
