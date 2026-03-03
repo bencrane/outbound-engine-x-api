@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     jwt_secret: str
     jwt_algorithm: str = "HS256"
-    jwt_expiration_minutes: int = 60
+    jwt_expiration_minutes: int = 10080
     smartlead_webhook_secret: str | None = None
     heyreach_webhook_secret: str | None = None
     emailbison_webhook_path_token: str | None = None
