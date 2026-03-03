@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
 from src.auth import AuthContext, get_current_auth, has_permission
 from src.db import supabase
@@ -22,6 +23,13 @@ from src.models.campaigns import (
     CampaignCreateRequest,
     CampaignResponse,
     CampaignStatusUpdateRequest,
+)
+from src.models.multi_channel import (
+    LeadProgressResponse,
+    LeadProviderIdResponse,
+    MultiChannelCampaignCreateRequest,
+    MultiChannelSequenceUpsertRequest,
+    SequenceStepResponse,
 )
 from src.models.sequences import CampaignSequenceResponse, CampaignSequenceUpsertRequest
 from src.models.leads import (
@@ -72,6 +80,37 @@ from src.providers.emailbison.client import (
 
 
 router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
+
+CHANNEL_CAPABILITY_MAP: dict[str, str] = {
+    "email": "email_outreach",
+    "linkedin": "linkedin_outreach",
+    "direct_mail": "direct_mail",
+}
+
+
+class MultiChannelCampaignResponse(BaseModel):
+    id: str
+    company_id: str
+    provider_id: str | None = None
+    external_campaign_id: str
+    name: str
+    status: str
+    campaign_type: str
+    created_by_user_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CampaignActivateResponse(BaseModel):
+    campaign_id: str
+    status: str
+    leads_initialized: int
+    first_step_order: int
+    first_execute_at: datetime
+
+
+class LeadProgressDetailResponse(LeadProgressResponse):
+    provider_ids: list[LeadProviderIdResponse] = []
 
 
 def _now_iso() -> str:
@@ -240,7 +279,7 @@ def _get_org_provider_config(org_id: str, provider_slug: str) -> dict[str, Any]:
 def _get_campaign_for_auth(auth: AuthContext, campaign_id: str) -> dict[str, Any]:
     _require_campaigns_read(auth)
     query = supabase.table("company_campaigns").select(
-        "id, org_id, company_id, provider_id, external_campaign_id, name, status, created_by_user_id, created_at, updated_at"
+        "id, org_id, company_id, provider_id, external_campaign_id, name, status, campaign_type, created_by_user_id, created_at, updated_at"
     ).eq("id", campaign_id).eq("org_id", auth.org_id).is_("deleted_at", "null")
     if auth.company_id:
         query = query.eq("company_id", auth.company_id)
@@ -253,6 +292,14 @@ def _get_campaign_for_auth(auth: AuthContext, campaign_id: str) -> dict[str, Any
 def _get_campaign_provider_slug(campaign: dict[str, Any]) -> str:
     provider = _get_provider_by_id(campaign["provider_id"])
     return provider["slug"]
+
+
+def _require_multi_channel_campaign(campaign: dict[str, Any]) -> None:
+    if (campaign.get("campaign_type") or "single_channel") != "multi_channel":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Campaign is not a multi-channel campaign",
+        )
 
 
 def _extract_provider_lead(lead: dict[str, Any]) -> dict[str, Any] | None:
@@ -433,6 +480,29 @@ async def create_campaign(
     return created.data[0]
 
 
+@router.post("/multi-channel", response_model=MultiChannelCampaignResponse, status_code=status.HTTP_201_CREATED)
+async def create_multi_channel_campaign(
+    data: MultiChannelCampaignCreateRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    company_id = _resolve_company_id(auth, data.company_id)
+    _get_company(auth, company_id)
+
+    insert_data = {
+        "org_id": auth.org_id,
+        "company_id": company_id,
+        "campaign_type": "multi_channel",
+        "provider_id": None,
+        "external_campaign_id": "",
+        "name": data.name,
+        "status": "DRAFTED",
+        "created_by_user_id": auth.user_id,
+        "updated_at": _now_iso(),
+    }
+    created = supabase.table("company_campaigns").insert(insert_data).execute()
+    return created.data[0]
+
+
 @router.get("/", response_model=list[CampaignResponse])
 async def list_campaigns(
     company_id: str | None = Query(None),
@@ -449,7 +519,7 @@ async def list_campaigns(
         _get_company(auth, resolved_company_id)
 
     query = supabase.table("company_campaigns").select(
-        "id, company_id, provider_id, external_campaign_id, name, status, created_by_user_id, created_at, updated_at"
+        "id, company_id, provider_id, external_campaign_id, name, status, campaign_type, created_by_user_id, created_at, updated_at"
     ).eq("org_id", auth.org_id).is_("deleted_at", "null")
     if resolved_company_id:
         query = query.eq("company_id", resolved_company_id)
@@ -457,6 +527,377 @@ async def list_campaigns(
         query = query.eq("created_by_user_id", auth.user_id)
     result = query.execute()
     return result.data
+
+
+@router.get("/{campaign_id}/multi-channel-sequence", response_model=list[SequenceStepResponse])
+async def get_multi_channel_sequence(
+    campaign_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    _require_multi_channel_campaign(campaign)
+
+    rows = (
+        supabase.table("campaign_sequence_steps")
+        .select(
+            "id, step_order, channel, provider_id, action_type, action_config, delay_days, execution_mode, skip_if, provider_campaign_id, created_at, updated_at"
+        )
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_id", campaign_id)
+        .is_("deleted_at", "null")
+        .order("step_order")
+        .execute()
+        .data
+        or []
+    )
+    return rows
+
+
+@router.put("/{campaign_id}/multi-channel-sequence", response_model=list[SequenceStepResponse])
+async def upsert_multi_channel_sequence(
+    campaign_id: str,
+    data: MultiChannelSequenceUpsertRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    _require_campaigns_write(auth)
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    _require_multi_channel_campaign(campaign)
+    if (campaign.get("status") or "").upper() != "DRAFTED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Sequence can only be modified while campaign is DRAFTED",
+        )
+
+    seen_step_orders: set[int] = set()
+    for step in data.steps:
+        if step.step_order in seen_step_orders:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Duplicate step_order {step.step_order} in sequence definition",
+            )
+        seen_step_orders.add(step.step_order)
+
+    capability_rows = supabase.table("capabilities").select("id, slug").execute().data or []
+    capability_id_by_slug = {
+        str(row["slug"]): str(row["id"])
+        for row in capability_rows
+        if row.get("id") and row.get("slug")
+    }
+    entitlement_rows = (
+        supabase.table("company_entitlements")
+        .select("capability_id, provider_id")
+        .eq("org_id", auth.org_id)
+        .eq("company_id", campaign["company_id"])
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    provider_id_by_capability_id = {
+        str(row["capability_id"]): str(row["provider_id"])
+        for row in entitlement_rows
+        if row.get("capability_id") and row.get("provider_id")
+    }
+
+    now_iso = _now_iso()
+    (
+        supabase.table("campaign_sequence_steps")
+        .update({"deleted_at": now_iso, "updated_at": now_iso})
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_id", campaign_id)
+        .is_("deleted_at", "null")
+        .execute()
+    )
+
+    inserted_rows: list[dict[str, Any]] = []
+    for step in data.steps:
+        capability_slug = CHANNEL_CAPABILITY_MAP[step.channel]
+        capability_id = capability_id_by_slug.get(capability_slug)
+        provider_id = provider_id_by_capability_id.get(capability_id or "")
+        if not provider_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Company is not entitled to {capability_slug} required by step {step.step_order}",
+            )
+
+        created = (
+            supabase.table("campaign_sequence_steps")
+            .insert(
+                {
+                    "org_id": auth.org_id,
+                    "company_campaign_id": campaign_id,
+                    "step_order": step.step_order,
+                    "channel": step.channel,
+                    "provider_id": provider_id,
+                    "action_type": step.action_type,
+                    "action_config": step.action_config,
+                    "delay_days": step.delay_days,
+                    "execution_mode": step.execution_mode,
+                    "skip_if": step.skip_if,
+                    "provider_campaign_id": step.provider_campaign_id,
+                    "updated_at": _now_iso(),
+                }
+            )
+            .execute()
+        )
+        if created.data:
+            created_row = created.data[0]
+            inserted_rows.append(
+                {
+                    "id": created_row["id"],
+                    "step_order": created_row["step_order"],
+                    "channel": created_row["channel"],
+                    "provider_id": created_row["provider_id"],
+                    "action_type": created_row["action_type"],
+                    "action_config": created_row.get("action_config") or {},
+                    "delay_days": created_row.get("delay_days") or 0,
+                    "execution_mode": created_row.get("execution_mode") or "direct_single_touch",
+                    "skip_if": created_row.get("skip_if"),
+                    "provider_campaign_id": created_row.get("provider_campaign_id"),
+                    "created_at": created_row["created_at"],
+                    "updated_at": created_row["updated_at"],
+                }
+            )
+
+    return sorted(inserted_rows, key=lambda row: int(row["step_order"]))
+
+
+@router.post("/{campaign_id}/multi-channel-leads", response_model=CampaignLeadMutationResponse)
+async def add_multi_channel_campaign_leads(
+    campaign_id: str,
+    data: CampaignLeadsAddRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    _require_campaigns_write(auth)
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    _require_multi_channel_campaign(campaign)
+
+    first_step_rows = (
+        supabase.table("campaign_sequence_steps")
+        .select("id, provider_id, step_order")
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_id", campaign_id)
+        .is_("deleted_at", "null")
+        .order("step_order")
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not first_step_rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Sequence must be configured before adding multi-channel leads",
+        )
+    default_provider_id = first_step_rows[0]["provider_id"]
+
+    affected = 0
+    for lead in data.leads:
+        supabase.table("company_campaign_leads").insert(
+            {
+                "org_id": auth.org_id,
+                "company_id": campaign["company_id"],
+                "company_campaign_id": campaign_id,
+                "provider_id": default_provider_id,
+                "external_lead_id": "",
+                "email": lead.email,
+                "first_name": lead.first_name,
+                "last_name": lead.last_name,
+                "linkedin_url": lead.linkedin_url,
+                "company_name": lead.company,
+                "title": lead.title,
+                "phone": lead.phone,
+                "status": "pending",
+                "updated_at": _now_iso(),
+            }
+        ).execute()
+        affected += 1
+
+    return CampaignLeadMutationResponse(campaign_id=campaign_id, affected=affected, status="added")
+
+
+@router.post("/{campaign_id}/activate", response_model=CampaignActivateResponse)
+async def activate_multi_channel_campaign(
+    campaign_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    _require_campaigns_write(auth)
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    _require_multi_channel_campaign(campaign)
+    if (campaign.get("status") or "").upper() != "DRAFTED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Campaign must be in DRAFTED status to activate",
+        )
+
+    first_step_rows = (
+        supabase.table("campaign_sequence_steps")
+        .select("id, step_order, delay_days")
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_id", campaign_id)
+        .is_("deleted_at", "null")
+        .order("step_order")
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not first_step_rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot activate campaign without sequence steps",
+        )
+    first_step = first_step_rows[0]
+
+    leads = (
+        supabase.table("company_campaign_leads")
+        .select("id")
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_id", campaign_id)
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    if not leads:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot activate campaign without leads",
+        )
+
+    first_step_order = int(first_step.get("step_order") or 1)
+    delay_days = int(first_step.get("delay_days") or 0)
+    first_execute_at = datetime.now(timezone.utc) + timedelta(days=delay_days)
+    first_execute_at_iso = first_execute_at.isoformat()
+
+    for lead in leads:
+        supabase.table("campaign_lead_progress").insert(
+            {
+                "org_id": auth.org_id,
+                "company_campaign_id": campaign_id,
+                "company_campaign_lead_id": lead["id"],
+                "current_step_id": first_step["id"],
+                "current_step_order": first_step_order,
+                "step_status": "pending",
+                "next_execute_at": first_execute_at_iso,
+                "attempts": 0,
+                "updated_at": _now_iso(),
+            }
+        ).execute()
+
+    supabase.table("company_campaigns").update(
+        {"status": "ACTIVE", "updated_at": _now_iso()}
+    ).eq("id", campaign_id).eq("org_id", auth.org_id).execute()
+
+    return CampaignActivateResponse(
+        campaign_id=campaign_id,
+        status="ACTIVE",
+        leads_initialized=len(leads),
+        first_step_order=first_step_order,
+        first_execute_at=first_execute_at,
+    )
+
+
+@router.get("/{campaign_id}/lead-progress", response_model=list[LeadProgressResponse])
+async def list_multi_channel_lead_progress(
+    campaign_id: str,
+    step_status: str | None = Query(None),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    _require_multi_channel_campaign(campaign)
+
+    query = (
+        supabase.table("campaign_lead_progress")
+        .select(
+            "id, company_campaign_lead_id, current_step_order, step_status, next_execute_at, executed_at, completed_at, attempts, last_error"
+        )
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_id", campaign_id)
+    )
+    if step_status:
+        query = query.eq("step_status", step_status)
+
+    rows = query.execute().data or []
+    return [
+        {
+            "id": row["id"],
+            "lead_id": row["company_campaign_lead_id"],
+            "current_step_order": row["current_step_order"],
+            "step_status": row["step_status"],
+            "next_execute_at": row.get("next_execute_at"),
+            "executed_at": row.get("executed_at"),
+            "completed_at": row.get("completed_at"),
+            "attempts": row.get("attempts") or 0,
+            "last_error": row.get("last_error"),
+        }
+        for row in rows
+    ]
+
+
+@router.get("/{campaign_id}/leads/{lead_id}/progress", response_model=LeadProgressDetailResponse)
+async def get_multi_channel_lead_progress(
+    campaign_id: str,
+    lead_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    _require_multi_channel_campaign(campaign)
+    _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
+
+    progress_rows = (
+        supabase.table("campaign_lead_progress")
+        .select(
+            "id, company_campaign_lead_id, current_step_order, step_status, next_execute_at, executed_at, completed_at, attempts, last_error"
+        )
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_id", campaign_id)
+        .eq("company_campaign_lead_id", lead_id)
+        .execute()
+        .data
+        or []
+    )
+    if not progress_rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead progress not found")
+
+    provider_mappings = (
+        supabase.table("campaign_lead_provider_ids")
+        .select("provider_id, external_id")
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_lead_id", lead_id)
+        .execute()
+        .data
+        or []
+    )
+    providers = supabase.table("providers").select("id, slug").execute().data or []
+    provider_slug_by_id = {str(row["id"]): str(row["slug"]) for row in providers if row.get("id") and row.get("slug")}
+    provider_ids: list[LeadProviderIdResponse] = []
+    for mapping in provider_mappings:
+        provider_id = mapping.get("provider_id")
+        external_id = mapping.get("external_id")
+        if not provider_id or external_id is None:
+            continue
+        provider_ids.append(
+            LeadProviderIdResponse(
+                provider_id=str(provider_id),
+                provider_slug=provider_slug_by_id.get(str(provider_id), "unknown"),
+                external_id=str(external_id),
+            )
+        )
+
+    row = progress_rows[0]
+    return LeadProgressDetailResponse(
+        id=row["id"],
+        lead_id=row["company_campaign_lead_id"],
+        current_step_order=row["current_step_order"],
+        step_status=row["step_status"],
+        next_execute_at=row.get("next_execute_at"),
+        executed_at=row.get("executed_at"),
+        completed_at=row.get("completed_at"),
+        attempts=row.get("attempts") or 0,
+        last_error=row.get("last_error"),
+        provider_ids=provider_ids,
+    )
 
 
 @router.get("/messages", response_model=list[OrgCampaignMessageResponse])

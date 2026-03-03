@@ -36,10 +36,11 @@ class CampaignStatusUpdateRequest(BaseModel):
 class CampaignResponse(BaseModel):
     id: str
     company_id: str
-    provider_id: str
+    provider_id: str | None = None
     external_campaign_id: str
     name: str
     status: CampaignStatus
+    campaign_type: str = "single_channel"
     created_by_user_id: str | None = None
     created_at: datetime
     updated_at: datetime
