@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     emailbison_webhook_path_token: str | None = None
     emailbison_webhook_allowed_origins: str = "app.emailbison.com,emailbison.com"
     internal_scheduler_secret: str | None = None
+    orchestrator_tick_batch_size: int = 50
+    orchestrator_tick_enabled: bool = True
+    orchestrator_max_retries: int = 5
+    orchestrator_retry_base_minutes: int = 5
+    orchestrator_retry_max_minutes: int = 60
+    orchestrator_stale_lock_minutes: int = 10
     heyreach_message_sync_mode: str = "webhook_only"  # webhook_only | pull_best_effort
     observability_export_url: str | None = None
     observability_export_bearer_token: str | None = None

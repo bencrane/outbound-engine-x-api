@@ -11,6 +11,7 @@ from src.routers import (
     super_admin,
     internal_provisioning,
     internal_reconciliation,
+    orchestrator,
     inboxes,
     campaigns,
     email_outreach,
@@ -51,6 +52,7 @@ app.include_router(auth_routes.router)
 app.include_router(super_admin.router)
 app.include_router(internal_provisioning.router)
 app.include_router(internal_reconciliation.router)
+app.include_router(orchestrator.router)
 app.include_router(inboxes.router)
 app.include_router(campaigns.router)
 app.include_router(email_outreach.router)
