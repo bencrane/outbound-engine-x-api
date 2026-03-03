@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 SequenceChannel = Literal["email", "linkedin", "direct_mail"]
 SequenceExecutionMode = Literal["direct_single_touch", "campaign_mediated"]
@@ -76,5 +76,44 @@ class MultiChannelCampaignCreateRequest(BaseModel):
 
 class MultiChannelSequenceUpsertRequest(BaseModel):
     steps: list[SequenceStepDefinition] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class LeadStepContent(BaseModel):
+    step_order: int = Field(ge=1)
+    action_config_override: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
+class MultiChannelLeadCreateInput(BaseModel):
+    email: EmailStr
+    first_name: str | None = None
+    last_name: str | None = None
+    linkedin_url: str | None = None
+    company: str | None = None
+    title: str | None = None
+    phone: str | None = None
+    step_content: list[LeadStepContent] | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class MultiChannelLeadsAddRequest(BaseModel):
+    leads: list[MultiChannelLeadCreateInput] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class LeadStepContentUpsertRequest(BaseModel):
+    steps: list[LeadStepContent] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class LeadStepContentResponse(BaseModel):
+    step_order: int = Field(ge=1)
+    action_config_override: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}

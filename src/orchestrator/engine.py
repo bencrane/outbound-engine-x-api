@@ -279,6 +279,14 @@ def _upsert_lead_provider_external_id(
     supabase.table("campaign_lead_provider_ids").insert(payload).execute()
 
 
+def _merge_action_config(step_config: dict[str, Any], lead_override: dict[str, Any] | None) -> dict[str, Any]:
+    if not lead_override:
+        return step_config
+    merged = {**step_config}
+    merged.update(lead_override)
+    return merged
+
+
 def run_orchestrator_tick(
     *,
     batch_size: int = 50,
@@ -334,14 +342,36 @@ def run_orchestrator_tick(
             campaign = _get_campaign(company_campaign_id)
             org_id = str(campaign["org_id"])
             lead_provider_ids = _get_lead_provider_id_map(org_id, company_campaign_lead_id)
+            step_order = int(step.get("step_order") or progress.get("current_step_order") or 0)
+            lead_override_rows = (
+                supabase.table("campaign_lead_step_content")
+                .select("action_config_override")
+                .eq("org_id", org_id)
+                .eq("company_campaign_id", company_campaign_id)
+                .eq("company_campaign_lead_id", company_campaign_lead_id)
+                .eq("step_order", step_order)
+                .execute()
+                .data
+                or []
+            )
+            lead_override = (
+                lead_override_rows[0].get("action_config_override")
+                if lead_override_rows
+                else None
+            )
+            merged_step = dict(step)
+            merged_step["action_config"] = _merge_action_config(
+                step.get("action_config") or {},
+                lead_override if isinstance(lead_override, dict) else None,
+            )
 
             result.leads_processed += 1
             if dry_run:
                 continue
 
-            if step.get("skip_if"):
+            if merged_step.get("skip_if"):
                 if should_skip_step(
-                    skip_if=step["skip_if"],
+                    skip_if=merged_step["skip_if"],
                     lead_id=company_campaign_lead_id,
                     campaign_id=company_campaign_id,
                     org_id=org_id,
@@ -363,10 +393,10 @@ def run_orchestrator_tick(
                     _write_campaign_event(
                         campaign=campaign,
                         progress=progress,
-                        step=step,
-                        event_type=f"step_{step['action_type']}_skipped",
+                        step=merged_step,
+                        event_type=f"step_{merged_step['action_type']}_skipped",
                         provider_slug=None,
-                        payload={"skip_if": step.get("skip_if")},
+                        payload={"skip_if": merged_step.get("skip_if")},
                     )
                     if _advance_progress_to_next_or_complete(
                         progress_id=progress_id,
@@ -390,13 +420,13 @@ def run_orchestrator_tick(
 
             execution_result = execute_step(
                 org_id=org_id,
-                step=step,
+                step=merged_step,
                 lead=lead,
                 lead_provider_ids=lead_provider_ids,
             )
             result.steps_executed += 1
 
-            channel = str(step.get("channel") or "unknown")
+            channel = str(merged_step.get("channel") or "unknown")
             provider_slug = execution_result.provider_slug or "unknown"
 
             if execution_result.success:
@@ -425,14 +455,14 @@ def run_orchestrator_tick(
                 _write_campaign_event(
                     campaign=campaign,
                     progress=progress,
-                    step=step,
-                    event_type=f"step_{step['action_type']}_succeeded",
+                    step=merged_step,
+                    event_type=f"step_{merged_step['action_type']}_succeeded",
                     provider_slug=execution_result.provider_slug,
                     payload=execution_result.raw_response,
                 )
 
                 external_id = execution_result.external_id
-                provider_id = step.get("provider_id")
+                provider_id = merged_step.get("provider_id")
                 if external_id and provider_id:
                     _upsert_lead_provider_external_id(
                         org_id=org_id,
@@ -462,8 +492,8 @@ def run_orchestrator_tick(
             _write_campaign_event(
                 campaign=campaign,
                 progress=progress,
-                step=step,
-                event_type=f"step_{step['action_type']}_failed",
+                step=merged_step,
+                event_type=f"step_{merged_step['action_type']}_failed",
                 provider_slug=execution_result.provider_slug,
                 payload=execution_result.raw_response or {"error": execution_result.error_message},
             )

@@ -27,7 +27,10 @@ from src.models.campaigns import (
 from src.models.multi_channel import (
     LeadProgressResponse,
     LeadProviderIdResponse,
+    LeadStepContentResponse,
+    LeadStepContentUpsertRequest,
     MultiChannelCampaignCreateRequest,
+    MultiChannelLeadsAddRequest,
     MultiChannelSequenceUpsertRequest,
     SequenceStepResponse,
 )
@@ -665,7 +668,7 @@ async def upsert_multi_channel_sequence(
 @router.post("/{campaign_id}/multi-channel-leads", response_model=CampaignLeadMutationResponse)
 async def add_multi_channel_campaign_leads(
     campaign_id: str,
-    data: CampaignLeadsAddRequest,
+    data: MultiChannelLeadsAddRequest,
     auth: AuthContext = Depends(get_current_auth),
 ):
     _require_campaigns_write(auth)
@@ -690,27 +693,61 @@ async def add_multi_channel_campaign_leads(
             detail="Sequence must be configured before adding multi-channel leads",
         )
     default_provider_id = first_step_rows[0]["provider_id"]
+    campaign_step_orders = _get_campaign_step_orders(auth.org_id, campaign_id)
 
     affected = 0
     for lead in data.leads:
-        supabase.table("company_campaign_leads").insert(
-            {
-                "org_id": auth.org_id,
-                "company_id": campaign["company_id"],
-                "company_campaign_id": campaign_id,
-                "provider_id": default_provider_id,
-                "external_lead_id": "",
-                "email": lead.email,
-                "first_name": lead.first_name,
-                "last_name": lead.last_name,
-                "linkedin_url": lead.linkedin_url,
-                "company_name": lead.company,
-                "title": lead.title,
-                "phone": lead.phone,
-                "status": "pending",
-                "updated_at": _now_iso(),
-            }
-        ).execute()
+        lead_step_content = lead.step_content or []
+        if lead_step_content:
+            _validate_step_orders_exist(
+                campaign_id=campaign_id,
+                provided_step_orders={item.step_order for item in lead_step_content},
+                valid_step_orders=campaign_step_orders,
+            )
+            seen_orders: set[int] = set()
+            for item in lead_step_content:
+                if item.step_order in seen_orders:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Duplicate step_order {item.step_order} in lead step_content",
+                    )
+                seen_orders.add(item.step_order)
+
+        created_lead = (
+            supabase.table("company_campaign_leads")
+            .insert(
+                {
+                    "org_id": auth.org_id,
+                    "company_id": campaign["company_id"],
+                    "company_campaign_id": campaign_id,
+                    "provider_id": default_provider_id,
+                    "external_lead_id": "",
+                    "email": lead.email,
+                    "first_name": lead.first_name,
+                    "last_name": lead.last_name,
+                    "linkedin_url": lead.linkedin_url,
+                    "company_name": lead.company,
+                    "title": lead.title,
+                    "phone": lead.phone,
+                    "status": "pending",
+                    "updated_at": _now_iso(),
+                }
+            )
+            .execute()
+        )
+        created_lead_id = (created_lead.data or [{}])[0].get("id")
+        if created_lead_id and lead_step_content:
+            for step_content in lead_step_content:
+                supabase.table("campaign_lead_step_content").insert(
+                    {
+                        "org_id": auth.org_id,
+                        "company_campaign_id": campaign_id,
+                        "company_campaign_lead_id": created_lead_id,
+                        "step_order": step_content.step_order,
+                        "action_config_override": step_content.action_config_override,
+                        "updated_at": _now_iso(),
+                    }
+                ).execute()
         affected += 1
 
     return CampaignLeadMutationResponse(campaign_id=campaign_id, affected=affected, status="added")
@@ -1360,6 +1397,115 @@ async def list_campaign_leads(
     return result.data
 
 
+@router.put(
+    "/{campaign_id}/leads/{lead_id}/step-content",
+    response_model=list[LeadStepContentResponse],
+)
+async def upsert_multi_channel_lead_step_content(
+    campaign_id: str,
+    lead_id: str,
+    data: LeadStepContentUpsertRequest,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    _require_campaigns_write(auth)
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    _require_multi_channel_campaign(campaign)
+    _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
+
+    step_orders = [step.step_order for step in data.steps]
+    _validate_step_orders_exist(
+        campaign_id=campaign_id,
+        provided_step_orders=set(step_orders),
+        valid_step_orders=_get_campaign_step_orders(auth.org_id, campaign_id),
+    )
+    if len(step_orders) != len(set(step_orders)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Duplicate step_order values in steps payload",
+        )
+
+    for step in data.steps:
+        existing = (
+            supabase.table("campaign_lead_step_content")
+            .select("id")
+            .eq("org_id", auth.org_id)
+            .eq("company_campaign_id", campaign_id)
+            .eq("company_campaign_lead_id", lead_id)
+            .eq("step_order", step.step_order)
+            .execute()
+            .data
+            or []
+        )
+        payload = {
+            "org_id": auth.org_id,
+            "company_campaign_id": campaign_id,
+            "company_campaign_lead_id": lead_id,
+            "step_order": step.step_order,
+            "action_config_override": step.action_config_override,
+            "updated_at": _now_iso(),
+        }
+        if existing:
+            supabase.table("campaign_lead_step_content").update(payload).eq(
+                "id", existing[0]["id"]
+            ).eq("org_id", auth.org_id).execute()
+        else:
+            supabase.table("campaign_lead_step_content").insert(payload).execute()
+
+    rows = (
+        supabase.table("campaign_lead_step_content")
+        .select("step_order, action_config_override")
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_id", campaign_id)
+        .eq("company_campaign_lead_id", lead_id)
+        .order("step_order")
+        .execute()
+        .data
+        or []
+    )
+    return [
+        {
+            "step_order": int(row["step_order"]),
+            "action_config_override": row.get("action_config_override") or {},
+        }
+        for row in rows
+        if row.get("step_order") is not None
+    ]
+
+
+@router.get(
+    "/{campaign_id}/leads/{lead_id}/step-content",
+    response_model=list[LeadStepContentResponse],
+)
+async def get_multi_channel_lead_step_content(
+    campaign_id: str,
+    lead_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+):
+    campaign = _get_campaign_for_auth(auth, campaign_id)
+    _require_multi_channel_campaign(campaign)
+    _get_campaign_lead_for_auth(auth, campaign_id, lead_id)
+
+    rows = (
+        supabase.table("campaign_lead_step_content")
+        .select("step_order, action_config_override")
+        .eq("org_id", auth.org_id)
+        .eq("company_campaign_id", campaign_id)
+        .eq("company_campaign_lead_id", lead_id)
+        .order("step_order")
+        .execute()
+        .data
+        or []
+    )
+    return [
+        {
+            "step_order": int(row["step_order"]),
+            "action_config_override": row.get("action_config_override") or {},
+        }
+        for row in rows
+        if row.get("step_order") is not None
+    ]
+
+
 def _get_campaign_lead_for_auth(auth: AuthContext, campaign_id: str, lead_id: str) -> dict[str, Any]:
     _get_campaign_for_auth(auth, campaign_id)
     query = supabase.table("company_campaign_leads").select(
@@ -1369,6 +1515,37 @@ def _get_campaign_lead_for_auth(auth: AuthContext, campaign_id: str, lead_id: st
     if not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found")
     return result.data[0]
+
+
+def _get_campaign_step_orders(org_id: str, campaign_id: str) -> set[int]:
+    rows = (
+        supabase.table("campaign_sequence_steps")
+        .select("step_order")
+        .eq("org_id", org_id)
+        .eq("company_campaign_id", campaign_id)
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    return {int(row["step_order"]) for row in rows if row.get("step_order") is not None}
+
+
+def _validate_step_orders_exist(
+    *,
+    campaign_id: str,
+    provided_step_orders: set[int],
+    valid_step_orders: set[int],
+) -> None:
+    invalid_step_orders = sorted(order for order in provided_step_orders if order not in valid_step_orders)
+    if invalid_step_orders:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Invalid step_order values for campaign {campaign_id}: "
+                + ", ".join(str(order) for order in invalid_step_orders)
+            ),
+        )
 
 
 @router.post("/{campaign_id}/leads/{lead_id}/pause", response_model=CampaignLeadMutationResponse)
