@@ -11,3 +11,5 @@ build/
 .ruff_cache/
 archive/
 new-agent-response.md
+node_modules/
+.trigger/

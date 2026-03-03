@@ -1,0 +1,32 @@
+{
+  "name": "outbound-engine-x-api",
+  "version": "1.0.0",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bencrane/outbound-engine-x-api.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/bencrane/outbound-engine-x-api/issues"
+  },
+  "homepage": "https://github.com/bencrane/outbound-engine-x-api#readme",
+  "description": "",
+  "dependencies": {
+    "@trigger.dev/sdk": "^4.4.1"
+  },
+  "devDependencies": {
+    "@trigger.dev/build": "^4.4.1",
+    "trigger.dev": "^4.4.1",
+    "typescript": "^5.9.3"
+  }
+}
