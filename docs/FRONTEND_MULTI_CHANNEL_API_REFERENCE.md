@@ -439,19 +439,110 @@ These all still work identically for both single-channel and multi-channel campa
 
 ---
 
+## VoiceDrop (Ringless Voicemail) Endpoints
+
+VoiceDrop enables ringless voicemail drops — the prospect's phone doesn't ring, the voicemail just appears. Two modes: AI voice (text-to-speech from a cloned voice) or static audio (pre-recorded file).
+
+All require `Authorization: Bearer <jwt>`.
+
+### Send Voicemail (one-off)
+
+```
+POST /api/voicemail/send
+```
+
+```json
+{
+  "company_id": "69a9ffab-...",
+  "to": "7865551234",
+  "from_number": "7865550001",
+  "voice_clone_id": "L55l0kg8...",
+  "script": "Hi {{first_name}}, this is a quick message about..."
+}
+```
+
+For static audio instead of AI voice, replace `voice_clone_id`+`script` with:
+```json
+{
+  "recording_url": "https://example.com/audio.mp3"
+}
+```
+
+### Voice Clone Management
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/voicemail/voice-clones` | List all voice clones |
+| `POST` | `/api/voicemail/voice-clones` | Create clone (`{ "display_name": "...", "recording_url": "..." }`) |
+| `DELETE` | `/api/voicemail/voice-clones/{voice_clone_id}` | Delete a clone |
+| `POST` | `/api/voicemail/voice-clones/{voice_clone_id}/preview` | Preview clone with test script |
+
+### Sender Number Management
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/voicemail/sender-numbers` | List verified numbers |
+| `POST` | `/api/voicemail/sender-numbers/verify` | Start verification (`{ "phone_number": "...", "method": "sms" }`) |
+| `POST` | `/api/voicemail/sender-numbers/verify-code` | Complete verification (`{ "phone_number": "...", "code": "..." }`) |
+
+### Other
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/voicemail/dnc` | Add to Do Not Call list (`{ "phone": "..." }`) |
+| `GET` | `/api/voicemail/campaigns/{campaign_id}/reports` | Export delivered RVMs (returns CSV URL) |
+
+### Voicemail in Multi-Channel Sequences
+
+When defining a multi-channel sequence step for voicemail:
+
+```json
+{
+  "step_order": 3,
+  "channel": "voicemail",
+  "action_type": "send_voicemail",
+  "delay_days": 5,
+  "execution_mode": "direct_single_touch",
+  "action_config": {
+    "voice_clone_id": "L55l0kg8...",
+    "script": "Hi, this is a follow-up about...",
+    "from_number": "7865550001"
+  }
+}
+```
+
+The lead must have a `phone` field. If missing, the step fails (non-retryable).
+
+For static audio, use `recording_url` instead of `voice_clone_id`+`script` in `action_config`.
+
+---
+
+## Available Channels for Multi-Channel Sequences
+
+| Channel | Action Types | Execution Mode | Provider |
+|---|---|---|---|
+| `email` | `send_email` | `direct_single_touch` | EmailBison |
+| `linkedin` | `send_connection_request`, `send_linkedin_message` | `campaign_mediated` | HeyReach |
+| `direct_mail` | `send_postcard`, `send_letter` | `direct_single_touch` | Lob |
+| `voicemail` | `send_voicemail` | `direct_single_touch` | VoiceDrop |
+
+---
+
 ## Suggested Frontend UX Flow
 
 1. **Campaign list page** — show all campaigns, badge with `campaign_type` (single vs multi-channel)
 2. **Create campaign** — choice between single-channel (existing flow) and multi-channel (new flow)
 3. **Multi-channel builder** — step-by-step sequence designer:
-   - Add step → pick channel (email / LinkedIn / direct mail)
-   - Configure step (email subject+body, LinkedIn message, postcard template)
+   - Add step → pick channel (email / LinkedIn / direct mail / voicemail)
+   - Configure step (email subject+body, LinkedIn message, postcard template, voicemail script+voice clone)
    - Set delay (days after previous step)
    - Optionally set skip condition ("skip if replied")
    - Drag to reorder steps
-4. **Add leads** — manual entry, paste CSV, or bulk input. Just need email + name at minimum.
-5. **Review & activate** — show summary, hit activate
-6. **Progress dashboard** — per-campaign view showing each lead's journey through the sequence with status indicators
+4. **Add leads** — manual entry, paste CSV, or bulk input. Need email + name at minimum. Phone number required if sequence includes voicemail steps.
+5. **AI personalization** — send leads to AI, get back per-step content, push via `PUT /api/campaigns/{id}/leads/{lead_id}/step-content`
+6. **Review & activate** — show summary, hit activate
+7. **Progress dashboard** — per-campaign view showing each lead's journey through the sequence with status indicators
+8. **Voicemail settings** — manage voice clones and sender numbers under a settings/configuration page
 
 ---
 
@@ -465,4 +556,6 @@ For testing, these are the companies the frontend can create campaigns for:
 | Pinnacle Staffing | `cacb6480-260e-498f-9c56-b6b3e51aca1f` |
 | Horizon Media | `483ffe06-f9cb-4249-8815-a7673b0fc02e` |
 
-All three have entitlements for email_outreach (EmailBison), linkedin_outreach (HeyReach), and direct_mail (Lob).
+All three have entitlements for email_outreach (EmailBison), linkedin_outreach (HeyReach), direct_mail (Lob), and voicemail_drop (VoiceDrop).
+
+Note: voicemail_drop entitlements need to be provisioned for these companies before voicemail endpoints will work. The VoiceDrop API key also needs to be set in the org's provider_configs.
