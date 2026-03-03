@@ -242,7 +242,7 @@ def _get_email_outreach_entitlement(org_id: str, company_id: str) -> dict[str, A
 
     entitlement = supabase.table("company_entitlements").select("*").eq(
         "org_id", org_id
-    ).eq("company_id", company_id).eq("capability_id", capability_id).is_("deleted_at", "null").execute()
+    ).eq("company_id", company_id).eq("capability_id", capability_id).execute()
     if not entitlement.data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -591,7 +591,6 @@ async def upsert_multi_channel_sequence(
         .select("capability_id, provider_id")
         .eq("org_id", auth.org_id)
         .eq("company_id", campaign["company_id"])
-        .is_("deleted_at", "null")
         .execute()
         .data
         or []

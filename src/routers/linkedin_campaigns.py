@@ -144,7 +144,6 @@ def _get_heyreach_entitlement(org_id: str, company_id: str) -> dict[str, Any]:
         .eq("org_id", org_id)
         .eq("company_id", company_id)
         .eq("capability_id", capability_id)
-        .is_("deleted_at", "null")
         .execute()
     )
     if not entitlement.data:
