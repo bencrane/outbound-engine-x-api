@@ -356,6 +356,61 @@ def list_campaigns(
     raise VoiceDropProviderError("Unexpected VoiceDrop list campaigns response shape")
 
 
+def verify_sender_number_start(
+    api_key: str,
+    *,
+    phone_number: str,
+    method: str = "sms",
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any] | None:
+    data = _request_json(
+        method="POST",
+        path=f"{_EP_SENDER_NUMBERS}/verify",
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        json_payload={"phone_number": phone_number, "method": method},
+    )
+    if isinstance(data, dict):
+        return data
+    return None
+
+
+def verify_sender_number_complete(
+    api_key: str,
+    *,
+    phone_number: str,
+    code: str,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any] | None:
+    data = _request_json(
+        method="POST",
+        path=f"{_EP_SENDER_NUMBERS}/verify",
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        json_payload={"phone_number": phone_number, "code": code},
+    )
+    if isinstance(data, dict):
+        return data
+    return None
+
+
+def export_campaign_reports(
+    api_key: str,
+    *,
+    campaign_id: str,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=f"{_EP_CAMPAIGNS}/{campaign_id}/reports",
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(data, dict):
+        return data
+    raise VoiceDropProviderError("Unexpected VoiceDrop campaign reports response type")
+
+
 def set_campaign_status(
     api_key: str,
     *,

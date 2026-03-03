@@ -10,14 +10,16 @@ from src.db import supabase
 from src.domain.provider_errors import provider_error_detail, provider_error_http_status
 from src.providers.voicedrop.client import (
     VoiceDropProviderError,
-    _request_json as voicedrop_request_json,
     add_to_dnc_list as voicedrop_add_to_dnc_list,
     create_voice_clone as voicedrop_create_voice_clone,
     delete_voice_clone as voicedrop_delete_voice_clone,
+    export_campaign_reports as voicedrop_export_campaign_reports,
     list_sender_numbers as voicedrop_list_sender_numbers,
     list_voice_clones as voicedrop_list_voice_clones,
     preview_voice_clone as voicedrop_preview_voice_clone,
     send_ringless_voicemail as voicedrop_send_ringless_voicemail,
+    verify_sender_number_start as voicedrop_verify_sender_number_start,
+    verify_sender_number_complete as voicedrop_verify_sender_number_complete,
 )
 
 
@@ -263,11 +265,10 @@ async def verify_sender_number_start(
 ):
     _, _, creds = _resolve_voicemail_provider_creds(auth, company_id)
     try:
-        result = voicedrop_request_json(
-            method="POST",
-            path="/v1/sender-numbers/verify",
-            api_key=creds["api_key"],
-            json_payload={"phone_number": data.phone_number, "method": data.method},
+        result = voicedrop_verify_sender_number_start(
+            creds["api_key"],
+            phone_number=data.phone_number,
+            method=data.method,
         )
     except VoiceDropProviderError as exc:
         _raise_provider_http_error("sender_numbers_verify_start", exc)
@@ -282,11 +283,10 @@ async def verify_sender_number_complete(
 ):
     _, _, creds = _resolve_voicemail_provider_creds(auth, company_id)
     try:
-        result = voicedrop_request_json(
-            method="POST",
-            path="/v1/sender-numbers/verify",
-            api_key=creds["api_key"],
-            json_payload={"phone_number": data.phone_number, "code": data.code},
+        result = voicedrop_verify_sender_number_complete(
+            creds["api_key"],
+            phone_number=data.phone_number,
+            code=data.code,
         )
     except VoiceDropProviderError as exc:
         _raise_provider_http_error("sender_numbers_verify_complete", exc)
@@ -315,10 +315,9 @@ async def export_campaign_reports(
 ):
     _, _, creds = _resolve_voicemail_provider_creds(auth, company_id)
     try:
-        result = voicedrop_request_json(
-            method="GET",
-            path=f"/v1/campaigns/{campaign_id}/reports",
-            api_key=creds["api_key"],
+        result = voicedrop_export_campaign_reports(
+            creds["api_key"],
+            campaign_id=campaign_id,
         )
     except VoiceDropProviderError as exc:
         _raise_provider_http_error("campaign_reports_export", exc)
